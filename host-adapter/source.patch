@@ -1,0 +1,957 @@
+--- a/packages/client/ui-conversation/src/client/contract/slots.ts
++++ b/packages/client/ui-conversation/src/client/contract/slots.ts
+@@ -191,6 +191,8 @@
+     'conversation.hero.brand.mark': { kind: 'single'; scope: 'root'; owner: HeroBrandMarkOwnerProps }
+     /** Agent-preset control staged for a New Session. */
+     'conversation.hero.agentPreset': { kind: 'single'; scope: 'session-maybe'; owner: HeroAgentPresetOwnerProps }
++    /** 模式后由插件提供的会话级操作。 */
++    'conversation.hero.actions': { kind: 'list'; scope: 'session-maybe' }
+     /** Full-width entries above the composer card. */
+     'conversation.input.dock': { kind: 'list'; scope: 'session'; owner: InputZone }
+     /** Floating entries rendered inside the resident composer card. */
+@@ -236,6 +238,7 @@
+         'conversation.hero.brand.mark': { kind: 'single'; scope: 'root' }
+         'conversation.hero.workspace': { kind: 'single'; scope: 'root' }
+         'conversation.hero.agentPreset': { kind: 'single'; scope: 'session-maybe' }
++        'conversation.hero.actions': { kind: 'list'; scope: 'session-maybe' }
+       }
+       inject: ConversationInjected
+       locale: 'conversation'
+--- a/packages/client/ui-conversation/src/client/apply.ts
++++ b/packages/client/ui-conversation/src/client/apply.ts
+@@ -318,6 +318,7 @@
+       'conversation.hero.brand.mark': { kind: 'single', scope: 'root' },
+       'conversation.hero.workspace': { kind: 'single', scope: 'root' },
+       'conversation.hero.agentPreset': { kind: 'single', scope: 'session-maybe' },
++      'conversation.hero.actions': { kind: 'list', scope: 'session-maybe' },
+     },
+     slots: {
+       views: { scope: 'session' },
+--- a/packages/client/ui-conversation/src/client/skeleton/ConversationContent.tsx
++++ b/packages/client/ui-conversation/src/client/skeleton/ConversationContent.tsx
+@@ -130,6 +130,7 @@
+         onClose: () => { setPickerOpen(false) },
+       })}
+       {renderSlot('conversation.hero.agentPreset', {})}
++      {renderSlot('conversation.hero.actions', {})}
+     </div>
+   )
+
+--- a/packages/api/session-controller/src/types.ts
++++ b/packages/api/session-controller/src/types.ts
+@@ -298,6 +298,8 @@
+ /** Session model-selection request. */
+ export interface SessionSelectModelRequest extends ModelSelection {
+   readonly sessionId: SessionId
++  /** 设为 false 时仅修改当前会话，省略保持宿主默认行为。 */
++  readonly saveAsDefault?: boolean
+ }
+
+ /** Accepted model selection after Host resolution. */
+--- a/packages/api/session-controller/src/commands.ts
++++ b/packages/api/session-controller/src/commands.ts
+@@ -168,7 +168,8 @@
+             : { reasoningEffort: resolved.reasoningEffort }),
+         }
+         this.agents.selectForNextRequest(agent, selected)
+-        void this.ctx.agentDefaultModel.saveSelection(selected).catch((error: unknown) => {
++        // 专家任务不得覆盖员工普通会话的全局默认。
++        if (request.saveAsDefault !== false) void this.ctx.agentDefaultModel.saveSelection(selected).catch((error: unknown) => {
+           this.ctx.logger.warn(
+             `session-controller: model selection changed for the Session but the default was not saved: ${String(error)}`,
+           )
+--- a/packages/mcp/mcp-client/src/connection.ts
++++ b/packages/mcp/mcp-client/src/connection.ts
+@@ -364,6 +364,10 @@
+     ready,
+     instructions: () => serverInstructions,
+     resources: {
++      // 断连尚未释放的注册仍保留归属；可用性由连接状态单独表达。
++      describe() {
++        return { connected: !disposed && client !== undefined && connectedAt !== undefined, tools: [...disposers.keys()].sort() }
++      },
+       async request(request, exec): Promise<JsonValue> {
+         const generation = client
+         if (!generation || connectedAt === undefined) throw new Error(`${label}: server is disconnected`)
+--- a/packages/mcp/mcp-resources/src/index.ts
++++ b/packages/mcp/mcp-resources/src/index.ts
+@@ -24,6 +24,8 @@
+
+ /** One configured server's resource access, owned by its MCP connection plugin. */
+ export interface McpResourceProvider {
++  /** 连接 owner 的只读快照，不包含命令、URL 或凭据。 */
++  describe?(): { connected: boolean; tools: string[] }
+   /**
+    * Run an operation against one live connection generation.
+    * @param request - MCP resource method and parameters.
+@@ -68,6 +70,14 @@
+             + `as the server argument: ${JSON.stringify(names)}.`
+         },
+       })
++    })
++  }
++
++  /** 读取作用域内连接状态及工具归属，不访问网络或返回配置。 */
++  catalog(scope?: ScopeKey): { name: string; connected: boolean; tools: string[] }[] {
++    return [...this.layers.merge(scope, layer => layer.servers)].map(([name, provider]) => {
++      const description = provider.describe?.() ?? { connected: false, tools: [] }
++      return { name, connected: description.connected, tools: [...description.tools] }
+     })
+   }
+
+--- a/packages/extensions/tool-cordis/src/api-catalog.ts
++++ b/packages/extensions/tool-cordis/src/api-catalog.ts
+@@ -1483,6 +1483,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+     summary: 'Scoped resource access plus three tools shared by configured MCP servers.',
+     description: 'Scoped resource access plus three tools shared by configured MCP servers.',
+     methods: [
++      {
++        signature: 'catalog(scope?: ScopeKey): { name: string; connected: boolean; tools: string[]; }[]',
++        description: '读取当前作用域可见连接的名称、连接状态及实际工具归属，不暴露连接配置。',
++        parameters: [{ name: 'scope', description: '调用方作用域；省略只读全局目录。' }],
++        returns: '可见连接的当前只读快照。',
++      },
+       {
+         signature: 'register(server: string, provider: McpResourceProvider): () => void',
+         description: 'Register one server and expose resource tools while that scope has providers.',
+@@ -1875,6 +1881,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+         parameters: [{ name: 'request', description: 'Session whose task list is requested.' }],
+         returns: 'Persisted reminders in storage order.',
+       },
++      {
++        signature: 'async readCatalog<T>(reader: (entries: ScheduleCatalogEntry[]) => T, signal?: AbortSignal): Promise<T>',
++        description: 'Host 本地同步目录接纳点；初始化及取消检查后同步调用 reader，拒收异步结果，不暴露底层表。',
++        parameters: [{ name: 'reader', description: '同步读取与接纳函数，不得返回 Promise。' }, { name: 'signal', description: '等待前后取消。' }],
++        returns: '同步 reader 的接纳结果。',
++      },
+       {
+         signature: '@Remote(\'catalog\') async catalog(): Promise<ScheduleCatalogEntry[]>',
+         description: 'Read all active and inactive Host reminders with their original Session bindings. A deleted reminder has no row, so it is absent here. Does not activate Sessions or read Session history.',
+@@ -1900,6 +1912,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+         parameters: [{ name: 'request', description: 'Task binding, complete observed record, and any combination of timing, name, and instruction.' }, { name: 'signal', description: 'Cancellation checked after domain readiness and FIFO waits, before persistence begins.' }],
+         returns: 'The committed record, unchanged record for a no-op, or a non-mutating input/lookup/conflict result. Storage and lifecycle failures reject; cancellation after a write starts does not roll it back.',
+       },
++{ signature: '@Remote(\'pause\') async pause(request: ScheduleStateRequest, signal?: AbortSignal): Promise<ScheduleUpdateResult>', description: '暂停保留任务及历史；恢复跳过暂停期次。CAS 同时比较状态与记录，取消不回滚已开始的持久写入。', parameters: [{ name: 'request', description: '原会话、任务、观测记录与状态。' }, { name: 'signal', description: '写入前取消。' }], returns: '保存后的记录或非变更失败；状态从 catalog 读回。' },
++{ signature: '@Remote(\'resume\') async resume(request: ScheduleStateRequest, signal?: AbortSignal): Promise<ScheduleUpdateResult>', description: '暂停保留任务及历史；恢复跳过暂停期次。CAS 同时比较状态与记录，取消不回滚已开始的持久写入。', parameters: [{ name: 'request', description: '原会话、任务、观测记录与状态。' }, { name: 'signal', description: '写入前取消。' }], returns: '保存后的记录或非变更失败；状态从 catalog 读回。' },
+     ],
+   },
+   {
+@@ -5699,7 +5713,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'McpResourceProvider',
+-    declaration: 'export interface McpResourceProvider {\n    request(request: McpResourceRequest, exec: ToolExecution): Promise<JsonValue>;\n}',
++    declaration: 'export interface McpResourceProvider {\n    request(request: McpResourceRequest, exec: ToolExecution): Promise<JsonValue>;\n    describe?(): { connected: boolean; tools: string[]; };\n}',
+   },
+   {
+     name: 'McpResourceRequest',
+@@ -6307,7 +6321,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'ScheduleCatalogEntry',
+-    declaration: 'export type ScheduleCatalogEntry = ScheduleRecord & {\n    readonly sessionId: SessionId;\n    readonly status: \'active\' | \'inactive\';\n    readonly lastDelivery?: ScheduleDeliveryReceipt;\n};',
++    declaration: 'export type ScheduleCatalogEntry = ScheduleRecord & {\n    readonly sessionId: SessionId;\n    readonly status: \'active\' | \'paused\' | \'inactive\';\n    readonly lastDelivery?: ScheduleDeliveryReceipt;\n};',
+   },
+   {
+     name: 'ScheduleCreateRequest',
+@@ -6373,9 +6387,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+     name: 'ScheduleUpdateMiss',
+     declaration: 'export interface ScheduleUpdateMiss {\n    readonly id: ScheduleId;\n    readonly updated: false;\n    readonly code: \'schedule_not_found\' | \'schedule_ended\' | \'schedule_conflict\';\n}',
+   },
+-  {
++  { name: 'ScheduleStateRequest', declaration: 'export type ScheduleStateRequest = Pick<ScheduleUpdateRequest, \'sessionId\' | \'id\' | \'expected\' | \'expectedStatus\'>;' },
++{
+     name: 'ScheduleUpdateRequest',
+-    declaration: 'export interface ScheduleUpdateRequest extends ScheduleDeleteRequest, ScheduleUpdateContent {\n    readonly expected: ScheduleRecord;\n    readonly change?: ScheduleTimingChange;\n}',
++    declaration: 'export interface ScheduleUpdateRequest extends ScheduleDeleteRequest, ScheduleUpdateContent {\n    readonly expected: ScheduleRecord;\n    readonly expectedStatus: \'active\' | \'paused\';\n    readonly change?: ScheduleTimingChange;\n}',
+   },
+   {
+     name: 'ScheduleUpdateResult',
+@@ -6843,7 +6858,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'SessionSelectModelRequest',
+-    declaration: 'export interface SessionSelectModelRequest extends ModelSelection {\n    readonly sessionId: SessionId;\n}',
++    declaration: 'export interface SessionSelectModelRequest extends ModelSelection {\n    readonly sessionId: SessionId;\n    readonly saveAsDefault?: boolean;\n}',
+   },
+   {
+     name: 'SessionSelectModelValue',
+--- a/packages/api/session-controller/src/client/index.ts
++++ b/packages/api/session-controller/src/client/index.ts
+@@ -1,6 +1,21 @@
+ /** Client Session object layer, Agent scopes, and Remote lifecycle wiring. */
+
+ import type { Context } from '@deepseek-ai/cordis'
++import type { SessionId } from '@deepseek-ai/dsh-session/types'
++
++/** 客户端准备阶段，不允许改写问题、创建会话或再次发送。 */
++export interface SessionPromptPreparation {
++  readonly sessionId: SessionId;
++  readonly signal: AbortSignal;
++}
++
++declare module '@deepseek-ai/cordis' {
++  interface Events {
++    /** 原模式 owner 唯一使用 prepend；其它消费者默认追加，只返回 void。 */
++    'session/before-prompt'(this: Context, preparation: SessionPromptPreparation): void | Promise<void>;
++  }
++}
++
+ import type {} from '@deepseek-ai/dsh-agent/types'
+ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+ import type {} from '@deepseek-ai/dsh-client-file-upload/client'
+--- a/packages/api/session-controller/src/client/sessions/session.ts
++++ b/packages/api/session-controller/src/client/sessions/session.ts
+@@ -175,6 +175,7 @@
+    * dispatch-dependent behavior rather than fail.
+    */
+   private actx: Context | undefined
++  private preparationLifetime = new AbortController()
+
+   /**
+    * @param sessionId - Host session identity (client sessions are always Host-born).
+@@ -209,10 +210,12 @@
+   bindScope(actx: Context): void {
+     if (this.actx !== undefined) throw new Error(`session ${this.sessionId} already has a bound scope`)
+     this.actx = actx
++    this.preparationLifetime = new AbortController()
+   }
+
+   /** Release the bound scope at prune time (a later rebind accompanies a freshly minted scope). */
+   unbindScope(): void {
++    this.preparationLifetime.abort(new Error('会话绑定已释放'))
+     this.actx = undefined
+   }
+
+@@ -243,6 +246,47 @@
+     return { requestId, abandon: () => { this.retireFailedSubmission(requestId) } }
+   }
+
++  // 远端发送前先完成作用域内准备，取消不冒称撤销已发出的选择。
++  private async preparePrompt(signal?: AbortSignal): Promise<void> {
++    const actx = this.actx;
++    if (actx === undefined) return;
++    const controller = new AbortController();
++    const sources = [signal, this.preparationLifetime.signal].filter((value): value is AbortSignal => value !== undefined);
++    const abort = () => controller.abort(new Error('会话准备已取消'));
++    const timer = setTimeout(() => controller.abort(new Error('会话准备超过 15 秒')), 15000);
++    let removeAbort = () => {};
++    try {
++      for (const source of sources) {
++        if (source.aborted) abort();
++        else source.addEventListener('abort', abort, { once: true });
++      }
++      controller.signal.throwIfAborted();
++      const cancelled = new Promise<never>((_, reject) => {
++        const onAbort = () => reject(controller.signal.reason);
++        controller.signal.addEventListener('abort', onAbort, { once: true });
++        removeAbort = () => controller.signal.removeEventListener('abort', onAbort);
++      });
++      const payload = { sessionId: this.sessionId, signal: controller.signal };
++      const callbacks = actx.events.dispatch('serial', [actx, 'session/before-prompt', payload]);
++      const prepared = (async () => {
++        // serial 会吞掉 false/null；使用同一公开路由逐个检查，非 void 一律拒收。
++        for (const callback of callbacks) {
++          controller.signal.throwIfAborted();
++          const result = await callback(payload);
++          controller.signal.throwIfAborted();
++          if (result !== undefined) throw new Error('会话准备处理器必须返回 void');
++        }
++      })();
++      await Promise.race([prepared, cancelled]);
++      controller.signal.throwIfAborted();
++      if (this.actx !== actx) throw new Error('会话准备期间绑定已释放');
++    } finally {
++      clearTimeout(timer);
++      removeAbort();
++      for (const source of sources) source.removeEventListener('abort', abort);
++    }
++  }
++
+   /**
+    * Send (queue/steer passed through 1:1); failures land in the snapshot's promptError.
+    * @param content - text, browser-owned temporary image uploads, and staged-file receipts.
+@@ -257,6 +301,16 @@
+     signal?: AbortSignal,
+     requestId?: SessionRequestId,
+   ): Promise<RemoteResult<{ accepted: true }>> {
++    try {
++      if (this.actx !== undefined) await this.preparePrompt(signal);
++      signal?.throwIfAborted();
++    } catch (error) {
++      if (requestId !== undefined) this.retireFailedSubmission(requestId);
++      const failure = new RemoteError('gateway/internal', '会话准备未完成：' + (error instanceof Error ? error.message : String(error)), {});
++      this.promptError = { op: 'send', error: failure };
++      this.notifier.markDirty();
++      return { ok: false, error: failure };
++    }
+     this.promptError = null
+     this.lastAgentError = null
+     // Synchronous, before the first await: the blank → engaging edge must be
+@@ -597,6 +651,7 @@
+    * @returns when the Remote iterator has completed teardown.
+    */
+   async dispose(): Promise<void> {
++    this.preparationLifetime.abort(new Error('会话已释放'))
+     this.stopObservingInbox()
+     // Unsettled echoes retire as failed so their owners can restore or
+     // release browser resources; admitted echoes keep their observed outcome.
+--- a/packages/client/ui-agent-preset/src/client/seat-store.ts
++++ b/packages/client/ui-agent-preset/src/client/seat-store.ts
+@@ -65,6 +65,7 @@
+   private loadGeneration = 0
+   /** Completion of the active Host selection; Settings choices wait before staging. */
+   private pendingSelection: Promise<undefined> | undefined
++  private lastSelection: { sessionId: string; id: string } | undefined
+
+   constructor(
+     private readonly ctx: ClientContext,
+@@ -191,6 +192,40 @@
+     this.set({ introduce: false })
+   }
+
++  // 原模式选择与投影读回完成前，准备链不得进入业务专家。
++  async prepare(signal: AbortSignal): Promise<void> {
++    signal.throwIfAborted();
++    const session = this.currentSession();
++    if (session === undefined || !session.blank) return;
++    const required = this.staged.id ?? (this.pendingSelection === undefined ? undefined : this.store.getSnapshot().current);
++    if (required === undefined) return;
++    while (this.pendingSelection !== undefined) {
++      await this.pendingSelection;
++      signal.throwIfAborted();
++    }
++    if (this.currentSession()?.id !== session.id) throw new Error('模式选择的会话已改变');
++    if (this.store.getSnapshot().error !== null) throw new Error(this.store.getSnapshot().error ?? '模式准备失败');
++    const refusal = await this.apply();
++    signal.throwIfAborted();
++    if (refusal !== undefined) throw new Error(refusal);
++    if (this.staged.id !== undefined && this.staged.id !== required) throw new Error('模式选择已改变，请重新发送');
++    if (this.lastSelection?.sessionId === session.id && this.lastSelection.id !== required) throw new Error('模式提交读回不匹配');
++    await new Promise<void>((resolve, reject) => {
++      let stop = () => {};
++      const cleanup = () => { stop(); signal.removeEventListener('abort', aborted); };
++      const aborted = () => { cleanup(); reject(signal.reason); };
++      const check = () => {
++        if (signal.aborted) { aborted(); return; }
++        const current = this.currentSession();
++        if (current?.id !== session.id) { cleanup(); reject(new Error('模式读回期间会话已改变')); return; }
++        if (presetOf(current) === required) { cleanup(); resolve(); }
++      };
++      stop = this.ctx.sessions.list.subscribe(check);
++      signal.addEventListener('abort', aborted, { once: true });
++      check();
++    });
++  }
++
+   /**
+    * Hand the staged choice to the current session, if there is one to take it.
+    *
+@@ -224,7 +259,6 @@
+     }
+     const completion = Promise.withResolvers<undefined>()
+     this.pendingSelection = completion.promise
+-    this.clearStage()
+     try {
+       this.set({ busy: true, error: null })
+       const result = await this.ctx.remote.agentPresets.select(session.id, staged)
+@@ -244,7 +278,18 @@
+         })
+         return refusal
+       }
++      if (result.value !== staged) {
++        const refusal = '模式提交读回不匹配'
++        this.set({ error: refusal })
++        return refusal
++      }
++      this.lastSelection = { sessionId: session.id, id: result.value }
++      if (this.staged.id === staged) this.clearStage()
+       this.set({ current: this.staged.id ?? result.value })
++    } catch (error) {
++      const refusal = error instanceof Error ? error.message : String(error)
++      this.set({ error: refusal })
++      return refusal
+     } finally {
+       this.pendingSelection = undefined
+       this.set({ busy: false })
+--- a/packages/client/ui-agent-preset/src/client/index.ts
++++ b/packages/client/ui-agent-preset/src/client/index.ts
+@@ -151,6 +151,17 @@
+   // render and simply hides the button while no flow exists.
+   let creatorDraft: (() => void) | undefined
+   ctx.inject(['slots', 'conversation', 'sessions', 'uiWorkspace'], (scope: ClientContext) => {
++    // 模式 owner 唯一前置；业务准备监听器使用默认追加顺序。
++    scope.on('session/before-prompt', async ({ sessionId, signal }) => {
++      signal.throwIfAborted();
++      const binding = ctx.sessions.binding(sessionId);
++      const summary = ctx.sessions.list.getSnapshot().byId[sessionId];
++      if (binding === undefined || binding.session.getSnapshot().subagent !== null || !summary?.blank
++        || (ctx.sessions.retainInfo(sessionId).getSnapshot().retainedBy.mainView ?? 0) === 0) return;
++      await seatFor(binding).prepare(signal);
++      signal.throwIfAborted();
++      if (ctx.sessions.binding(sessionId) !== binding) throw new Error('模式准备的会话绑定已改变');
++    }, { prepend: true });
+     const seatInjected = (sessionId: SessionId | undefined): AgentPresetSeatInjected => {
+       const binding = sessionId === undefined ? undefined : ctx.sessions.binding(sessionId)
+       const seat = binding === undefined ? unboundSeat : seatFor(binding)
+--- a/packages/client/ui-sidebar-right/src/client/service.ts
++++ b/packages/client/ui-sidebar-right/src/client/service.ts
+@@ -127,6 +127,8 @@
+
+ /** What the controller needs from the page around it: the viewport rule and focus continuity. */
+ export interface SidebarRightHost {
++  /** 外部面板的会话呈现租约；未接线的独立测试宿主拒绝该操作。 */
++  readonly presentSession?: (panelId: string, sessionId: SessionId) => () => void
+   /**
+    * Whether the viewport is narrow enough that an expanded panel is presented fullscreen.
+    * @returns the rule's verdict for the frame width the seats last rendered at.
+@@ -184,9 +186,14 @@
+
+ /** The outward right-Sidebar face (`ctx.sidebarRight`). */
+ export interface ISidebarRight {
+-  /**
+-   * The Session on screen, or `undefined` while none is (a global panel fills
+-   * the main column, or no Session is selected). It changes before React
++  /** 临时聚焦已挂载会话；调用方在切页、换身份和卸载时释放。 */
++  focusPresentation(sessionId: SessionId): () => void
++
++  /** 保留已存在的会话，只有对应面板活动时呈现；重复面板拒收，释放幂等。 */
++  presentSession(panelId: string, sessionId: SessionId): () => void
++  /**
++   * 屏幕上的会话；原生主会话或活动面板租约均未提供会话时为 `undefined`。
++   * It changes before React
+    * renders the selection or panel change that causes it, so every component
+    * rendered in that commit reads the arriving Session, and the commands act on
+    * it from that commit's effects: its seat mints its store in the same render.
+@@ -260,6 +267,40 @@
+
+ /** Cross-plugin right-Sidebar face (ctx.sidebarRight). */
+ export class SidebarRightController implements ISidebarRight {
++  private readonly focusPresentations = new Map<SessionId, { readonly adoption: Adoption; readonly release: () => void }>()
++
++  /** 仅改变布局，原标签及 guest 保持挂载。 */
++  focusPresentation(sessionId: SessionId): () => void {
++    const mounted = this.require();
++    if (mounted.sessionId !== sessionId) throw new Error('浏览器呈现会话已切换');
++    const adoption = this.adopted.get(sessionId);
++    const layout = adoption?.store.getSnapshot().bySession[sessionId]?.layout;
++    if (adoption === undefined || layout === undefined) throw new Error('浏览器呈现尚未就绪');
++    const existing = this.focusPresentations.get(sessionId);
++    if (existing?.adoption === adoption) {
++      mounted.actions.setMode(sessionId, 'fullscreen');
++      mounted.actions.setExpanded(sessionId, true);
++      return existing.release;
++    }
++    existing?.release();
++    const original = { mode: layout.mode, expanded: layout.expanded };
++    let released = false;
++    const release = () => {
++      if (released) return;
++      released = true;
++      this.focusPresentations.delete(sessionId);
++      if (this.adopted.get(sessionId) !== adoption) return;
++      mounted.actions.setMode(sessionId, original.mode);
++      mounted.actions.setExpanded(sessionId, original.expanded);
++    };
++    this.focusPresentations.set(sessionId, { adoption, release });
++    try {
++      mounted.actions.setMode(sessionId, 'fullscreen');
++      mounted.actions.setExpanded(sessionId, true);
++    } catch (error) { release(); throw error; }
++    return release;
++  }
++
+   /** Open tab metadata across saved and adopted Sessions, independent of visible seats. */
+   readonly openTabs: SidebarTabInventory['source']
+   /** The on-screen Session; see {@link ISidebarRight.mounted}. */
+@@ -312,6 +353,12 @@
+    */
+   tabsIn(sessionId: SessionId): readonly TabRecord[] {
+     return Object.values(this.adopted.get(sessionId)?.store.getSnapshot().bySession[sessionId]?.layout.tabs ?? {})
++  }
++
++  /** 保留外部面板的会话呈现，释放只影响本租约。 */
++  presentSession(panelId: string, sessionId: SessionId): () => void {
++    if (this.host.presentSession === undefined) throw new Error('右栏未连接外部会话呈现能力');
++    return this.host.presentSession(panelId, sessionId);
+   }
+
+   /**
+--- a/packages/client/ui-sidebar-right/src/client/shell/RightbarRoot.tsx
++++ b/packages/client/ui-sidebar-right/src/client/shell/RightbarRoot.tsx
+@@ -31,8 +31,8 @@
+  * @param props - frame geometry, view targets and the authorized Session renderer.
+  * @returns the foreground and retained background Sidebars.
+  */
+-export function RightbarRoot({ usePanelInfo, useViews, ...props }: RootProps) {
+-  const visible = usePanelInfo(info => info.activePanelId === null)
++export function RightbarRoot({ useViews, ...props }: RootProps) {
+   const views = useViews(value => value)
++  const visible = views.some(view => view.selected)
+   return <>{views.map(view => <SessionView key={view.sessionId} {...props} view={view} visible={visible} />)}</>
+ }
+--- a/packages/client/ui-sidebar-right/src/client/index.ts
++++ b/packages/client/ui-sidebar-right/src/client/index.ts
+@@ -108,15 +108,51 @@
+   // its own apply top level for the same reason.
+   const t = ctx.locale.bind(NS)
+   const tabs = new SidebarRightTabRegistry(ctx)
+-  const views = new SidebarSessionViews(ctx.sessions)
++  // 视图、命令目标与根可见性消费同一呈现选择。
++  const views = new SidebarSessionViews(ctx.sessions);
++  const layout: ILayout = ctx.layout;
++  const presentations = new Map<string, { sessionId: SessionId; reference: import('@deepseek-ai/dsh-api-session-controller/client').SessionReference }>();
++  let presentationStopped = false;
++  const effectiveSession = (): SessionId | undefined => {
++    const panelId = layout.panelInfo.getSnapshot().activePanelId;
++    return panelId === null ? ctx.uiSession.adapter.current.getSnapshot().key as SessionId | undefined : presentations.get(panelId)?.sessionId;
++  };
++  const syncPresentationSession = () => { views.select(effectiveSession()); };
++  const presentSession = (panelId: string, sessionId: SessionId): (() => void) => {
++    if (presentationStopped) throw new Error('右栏呈现服务已释放');
++    if (typeof panelId !== 'string' || panelId.trim() !== panelId || panelId.length === 0
++      || typeof sessionId !== 'string' || sessionId.trim() !== sessionId || sessionId.length === 0) throw new Error('右栏呈现需要有效的面板与会话标识');
++    if (presentations.has(panelId)) throw new Error('该面板已有右栏呈现租约');
++    if (ctx.sessions.binding(sessionId) === undefined) throw new Error('右栏呈现会话尚未保留');
++    const reference = ctx.sessions.retain(sessionId, { source: 'sidebarView' });
++    void reference.ready.catch((error) => { console.error('右栏呈现会话读取失败：', error); });
++    const lease = { sessionId, reference };
++    presentations.set(panelId, lease);
++    try { syncPresentationSession(); }
++    catch (error) { presentations.delete(panelId); reference.release(); throw error; }
++    let released = false;
++    return () => {
++      if (released) return;
++      released = true;
++      if (presentations.get(panelId) !== lease) return;
++      presentations.delete(panelId);
++      try { if (!presentationStopped) syncPresentationSession(); }
++      finally { reference.release(); }
++    };
++  };
+   ctx.effect(() => {
+-    const current = ctx.uiSession.adapter.current
+-    const sync = (): void => { views.select(current.getSnapshot().key as SessionId | undefined) }
+-    const unsubscribe = current.subscribe(sync)
+-    sync()
+-    return () => { unsubscribe(); views.dispose() }
+-  }, 'ui-sidebar-right: retained Session views')
+-  const layout: ILayout = ctx.layout
++    const current = ctx.uiSession.adapter.current;
++    const offCurrent = current.subscribe(syncPresentationSession);
++    const offPanel = layout.panelInfo.subscribe(syncPresentationSession);
++    syncPresentationSession();
++    return () => {
++      presentationStopped = true;
++      offCurrent(); offPanel();
++      for (const lease of presentations.values()) lease.reference.release();
++      presentations.clear();
++      views.dispose();
++    };
++  }, 'ui-sidebar-right: retained Session views');
+   // The automatic fullscreen rule as the seats last rendered it: the frame
+   // hands them its width as owner props, and every seat reports the same rule.
+   let autoFullscreen = false
+@@ -125,6 +161,7 @@
+     (address, signal) => { ctx.resources.pin(address, signal) },
+     {
+       autoFullscreen: () => autoFullscreen,
++      presentSession,
+       openWithFocus: (sessionId, open) => { openWithPaneFocus(document, sessionId, open) },
+       closeWithFocus: (sessionId, paneId, close) => { closeWithPaneFocus(document, sessionId, paneId, close) },
+     },
+@@ -136,7 +173,7 @@
+   ctx.effect(() => {
+     const sync = (): void => {
+       const selected = views.source.getSnapshot().find(view => view.selected)
+-      show(layout.panelInfo.getSnapshot().activePanelId === null ? selected?.sessionId : undefined)
++      show(selected?.sessionId)
+     }
+     const unsubscribeViews = views.source.subscribe(sync)
+     const unsubscribePanel = layout.panelInfo.subscribe(sync)
+--- a/packages/client/ui-sidebar-browser/src/client/index.ts
++++ b/packages/client/ui-sidebar-browser/src/client/index.ts
+@@ -33,6 +33,17 @@
+   interface SidebarRightTabParamsMap {
+     /** Optional initial Browser URL. */
+     browser: { readonly url?: string }
++  }
++}
++
++declare module '@deepseek-ai/dsh-client-ui-slots' {
++  interface SlotMap {
++    /** 原生浏览器工具栏的紧凑动作区。 */
++    'browser.toolbar.actions': {
++      kind: 'list'
++      scope: 'session'
++      owner: { readonly tabId: import('@deepseek-ai/dsh-client-ui-dockkit').TabId; readonly active: boolean }
++    }
+   }
+ }
+
+@@ -81,6 +92,7 @@
+     }, 'ui-sidebar-browser.frames')
+     scope.effect(() => scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
+       name: 'sidebar.right.pane.tab', key: BROWSER_ID, locale: namespace, store,
++      children: { 'browser.toolbar.actions': { kind: 'list', scope: 'session' } },
+       inject: (sessionId, actions) => {
+         const existing = controllers.get(sessionId)
+         if (existing !== undefined) {
+--- a/packages/client/ui-sidebar-browser/src/client/view/BrowserBody.tsx
++++ b/packages/client/ui-sidebar-browser/src/client/view/BrowserBody.tsx
+@@ -11,7 +11,7 @@
+   SHIELD_OUTLINE_PATH,
+   ICON_REGULAR_STROKE,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { InjectFace, PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
++import type { InjectFace, PropsLocale, PropsRuntime, PropsStore, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+ import type { BrowserInjected } from '../browser/BrowserController.ts'
+ import { emptyBrowserFrame } from '../browser/BrowserFrame.ts'
+ import { currentBrowserTarget } from '../browser/BrowserPersistence.ts'
+@@ -33,6 +33,7 @@
+
+ /** Browser body props assembled by the tab seat. */
+ export type BrowserBodyProps = PropsRuntime<'sidebar.right.pane.tab'>
++  & PropsRenderSlots<'browser.toolbar.actions'>
+   & PropsStore<BrowserStore>
+   & PropsLocale<'sidebarBrowser'>
+   & InjectFace<BrowserInjected>
+@@ -45,7 +46,7 @@
+
+ /** Render provider-neutral navigation state and optional controls. */
+ export function BrowserBody(props: BrowserBodyProps): ReactNode {
+-  const { mount, loadUrl, restore, goBack, goForward, reload, setSandbox, useBrowserState, useStore, useTabInfo, t } = props
++  const { mount, loadUrl, restore, goBack, goForward, reload, setSandbox, useBrowserState, useStore, useTabInfo, renderSlot, t } = props
+   const { tab } = useTabInfo()
+   useEffect(() => tab.actions.bindCommands({ refresh: () => { reload(tab.id) } }), [tab.actions, tab.id, reload])
+   const saved = useStore(state => state.byTab[tab.id])
+@@ -107,6 +108,7 @@
+           aria-pressed={!sandboxed}
+           onClick={() => { setSandbox(tab.id, !sandboxed) }}
+         ><SandboxPolicyIcon sandboxed={sandboxed} /></button>}
++        {renderSlot('browser.toolbar.actions', { tabId: tab.id, active: tab.visible })}
+       </form>
+       {sandboxed === false && <div className={css.sandboxWarning} role="status">{t('sandbox.warning')}</div>}
+       {error !== undefined && <div className={css.failure} role="status">{error.code !== undefined && error.description !== undefined
+--- a/packages/schedule/schedule/src/types.ts
++++ b/packages/schedule/schedule/src/types.ts
+@@ -214,7 +214,7 @@
+   /** Session receiving this reminder when it becomes due. */
+   readonly sessionId: SessionId
+   /** Inactive reminders remain visible but never schedule another delivery. */
+-  readonly status: 'active' | 'inactive'
++  readonly status: 'active' | 'paused' | 'inactive'
+   /** Most recent durably acknowledged inbox delivery, when available. */
+   readonly lastDelivery?: ScheduleDeliveryReceipt
+ }
+@@ -256,14 +256,14 @@
+ export type ScheduleChange = ScheduleCreateChange | ScheduleDeleteChange | ScheduleDispatchChange
+
+ /** Current delivery timing derived from the durable record and wall clock. */
+-export type ScheduleState = 'scheduled' | 'overdue'
++export type ScheduleState = 'scheduled' | 'overdue' | 'paused'
+
+ /** Host-driven delivery resumes the original Session when needed. */
+ export type ScheduleDeliveryMode = 'host'
+
+-/** Complete model-facing view of one active reminder. */
++/** Complete model-facing view of one active or paused reminder. */
+ export type ScheduleView = ScheduleRecord & {
+-  /** Whether the target remains in the future. */
++  /** Paused tasks are not armed; active tasks distinguish future and overdue targets. */
+   readonly state: ScheduleState
+   /** Reminder delivery never leaves the owning session. */
+   readonly deliveryMode: ScheduleDeliveryMode
+@@ -411,9 +411,14 @@
+ export interface ScheduleUpdateRequest extends ScheduleDeleteRequest, ScheduleUpdateContent {
+   /** Complete record observed when editing began, including the committed target. */
+   readonly expected: ScheduleRecord
++  /** 编辑同时比较观测状态，避免暂停与编辑相互覆盖。 */
++  readonly expectedStatus: 'active' | 'paused'
+   /** New timing; its kind may differ from the stored record's kind, and an omitted value keeps the committed target. */
+   readonly change?: ScheduleTimingChange
+ }
++
++/** 暂停和恢复只接收原身份、完整记录与状态。 */
++export type ScheduleStateRequest = Pick<ScheduleUpdateRequest, 'sessionId' | 'id' | 'expected' | 'expectedStatus'>
+
+ /** Non-mutating compare-and-update outcome: unknown, inactive, or changed since the read. */
+ export interface ScheduleUpdateMiss {
+--- a/packages/schedule/schedule/src/storage.ts
++++ b/packages/schedule/schedule/src/storage.ts
+@@ -37,7 +37,7 @@
+ export const scheduleTaskSchema = z.object({
+   sessionId: z.string().min(1).transform(SessionId),
+   record: recordSchema,
+-  status: z.enum(['active', 'inactive']).default('active'),
++  status: z.enum(['active', 'paused', 'inactive']).default('active'),
+   lastDelivery: deliveryReceiptSchema.optional(),
+   deliveryHistory: deliveryHistorySchema.optional(),
+ }).strict().refine((task) => {
+--- a/packages/schedule/schedule/src/index.ts
++++ b/packages/schedule/schedule/src/index.ts
+@@ -15,12 +15,12 @@ import { resolveScheduleUpdate } from './update.ts'
+ import {
+   foldScheduleEvents, ScheduleInputError, ScheduleLogError, ScheduleId, createAfterScheduleRecord, createAtScheduleRecord,
+   createEveryScheduleRecord, createDailyScheduleRecord, createWeeklyScheduleRecord, createCronScheduleRecord,
+-  scheduleTitle,
++  scheduleTitle, resolveRecurringOccurrence,
+ } from './domain.ts'
+ import type {
+   DeliveryRetentionBounds, ScheduleCatalogEntry, ScheduleCreateRequest, ScheduleDeleteRequest, ScheduleDeleteResult,
+   ScheduleDeliveryHistoryRequest, ScheduleDeliveryHistoryResult, ScheduleListRequest, ScheduleRecord,
+-  ScheduleUpdateRequest, ScheduleUpdateResult,
++  ScheduleUpdateRequest, ScheduleUpdateResult, ScheduleStateRequest,
+ } from './types.ts'
+
+ export type * from './types.ts'
+@@ -301,14 +301,28 @@ export class ScheduleService extends TypertRemoteService {
+    * @returns Reminders ordered by scheduledAt ascending, then lexicographically by id.
+    */
+   @Remote('catalog')
+-  async catalog(): Promise<ScheduleCatalogEntry[]> {
++  async catalog(): Promise<ScheduleCatalogEntry[]> { return this.readCatalog(rows => rows) }
++
++  /**
++   * Host 本地同步目录接纳点；不暴露表，不允许异步 reader。
++   * @param reader - 初始化完成后同步读取及接纳，不得返回 Promise。
++   * @param signal - 等待前后检查取消，取消后不调用 reader。
++   * @returns reader 的同步接纳结果；接纳后的外部写入沿用其原失败语义。
++   */
++  async readCatalog<T>(reader: (entries: ScheduleCatalogEntry[]) => T, signal?: AbortSignal): Promise<T> {
++    signal?.throwIfAborted()
+     const domain = await this.getDomain()
+-    return [...domain.table('tasks').entries()]
++    signal?.throwIfAborted()
++    if (this.stopping) throw new Error('Schedule service is stopping')
++    const rows = [...domain.table('tasks').entries()]
+       .map(([, task]) => ({
+         ...task.record, sessionId: task.sessionId, status: task.status,
+         ...(task.lastDelivery === undefined ? {} : { lastDelivery: task.lastDelivery }),
+       }))
+       .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt) || a.id.localeCompare(b.id))
++    const result = reader(rows)
++    if (result !== null && (typeof result === 'object' || typeof result === 'function') && 'then' in result && typeof result.then === 'function') throw new Error('Schedule catalog reader must be synchronous')
++    return result
+   }
+
+   /**
+@@ -355,6 +369,44 @@ export class ScheduleService extends TypertRemoteService {
+     })
+   }
+
++  /** 暂停与投递共享串行队列；提交后禁止新接受，已接受消息保留。 */
++  @Remote('pause')
++  async pause(request: ScheduleStateRequest, signal?: AbortSignal): Promise<ScheduleUpdateResult> { return this.setPaused(request, true, signal); }
++  /** 恢复同一任务，只安排未来期次；过期一次性任务先编辑后恢复。 */
++  @Remote('resume')
++  async resume(request: ScheduleStateRequest, signal?: AbortSignal): Promise<ScheduleUpdateResult> { return this.setPaused(request, false, signal); }
++  private async setPaused(request: ScheduleStateRequest, paused: boolean, signal?: AbortSignal): Promise<ScheduleUpdateResult> {
++    return this.serialize<ScheduleUpdateResult>(async () => {
++      const tasks = (await this.getDomain()).table("tasks");
++      signal?.throwIfAborted();
++      const current = tasks.get(request.id);
++      if (current === undefined || current.sessionId !== request.sessionId) return { id: request.id, updated: false, code: "schedule_not_found" };
++      if (current.status === "inactive") return { id: request.id, updated: false, code: "schedule_ended" };
++      if (request.expectedStatus !== current.status) return { id: request.id, updated: false, code: "schedule_conflict" };
++      const now = Date.now();
++      const checked = resolveScheduleUpdate(current.record, request.expected, undefined, now);
++      if (!("record" in checked)) return checked;
++      const status = paused ? "paused" : "active";
++      if (current.status === status) return checked;
++      let record = current.record;
++      if (!paused && Date.parse(record.scheduledAt) <= now) {
++        if (record.kind === "at" || record.kind === "after") return { code: "not_future", message: "请先把已过期的一次性任务编辑为未来时间，再恢复。" };
++        try {
++          const next = resolveRecurringOccurrence(record, now).nextScheduledAt;
++          if (next === undefined) return { code: "time_out_of_range", message: "时间范围内没有下一次可投递期次。" };
++          record = { ...record, scheduledAt: next };
++        } catch (error) {
++          if (!(error instanceof ScheduleInputError)) throw error;
++          return { code: error.code, message: error.message };
++        }
++      }
++      await tasks.put(request.id, { ...current, record, status });
++      this.emitChanged();
++      this.runtime?.requestDrive();
++      return { id: request.id, updated: true, record };
++    });
++  }
++
+   /**
+    * Update the name, instruction, and timing of an active task within the original Session
+    * binding without activating the Session or changing saved deliveries.
+@@ -376,6 +428,7 @@ export class ScheduleService extends TypertRemoteService {
+         return { id: request.id, updated: false, code: 'schedule_not_found' }
+       }
+       if (current.status === 'inactive') return { id: request.id, updated: false, code: 'schedule_ended' }
++      if (request.expectedStatus !== current.status) return { id: request.id, updated: false, code: 'schedule_conflict' }
+       const result = resolveScheduleUpdate(current.record, request.expected, request.change, Date.now(), request)
+       if (!('record' in result) || !result.updated) return result
+       await tasks.put(request.id, { ...current, record: result.record })
+--- a/packages/schedule/schedule/src/tools.ts
++++ b/packages/schedule/schedule/src/tools.ts
+@@ -20,7 +20,7 @@
+   title: { type: 'string', required: true },
+   prompt: { type: 'string', required: true },
+   scheduledAt: { type: 'string', required: true },
+-  state: { type: 'string', required: true, enum: ['scheduled', 'overdue'] },
++  state: { type: 'string', required: true, enum: ['scheduled', 'overdue', 'paused'] },
+   deliveryMode: { type: 'string', required: true, const: 'host' },
+ } as const
+
+@@ -513,8 +513,8 @@
+         const id = ScheduleId(args.id)
+         try {
+           const sessionId = agent.session.id
+-          const expected = (await rootCtx.schedule.list({ sessionId }))
+-            .find(record => record.id === id)
++          const entry = (await rootCtx.schedule.catalog()).find(record => record.sessionId === sessionId && record.id === id)
++          const expected = entry === undefined || entry.status === 'inactive' ? undefined : (({ sessionId: _sessionId, status: _status, lastDelivery: _lastDelivery, ...record }) => record)(entry)
+           if (expected === undefined) {
+             // The catalog also holds inactive reminders, which is the one not-found
+             // case the model can act on: it has to create a new reminder instead.
+@@ -527,11 +527,12 @@
+             sessionId,
+             id,
+             expected,
++            expectedStatus: entry?.status === 'paused' ? 'paused' : 'active',
+             ...(change === undefined ? {} : { change }),
+             ...(args.title === undefined ? {} : { title: args.title }),
+             ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+           }, exec.signal)
+-          return 'record' in result ? scheduleView(result.record, Date.now()) : result
++          return 'record' in result ? scheduleView(result.record, Date.now(), entry?.status === 'paused' ? 'paused' : 'active') : result
+         } catch (error: unknown) {
+           return operationError(error)
+         }
+--- a/packages/client/ui-schedule/src/client/TaskDetail.tsx
++++ b/packages/client/ui-schedule/src/client/TaskDetail.tsx
+@@ -603,6 +603,7 @@
+       // The refreshed record stays the complete expected rule even while an
+       // unsaved draft keeps the shown values.
+       expected: timingSnapshot(task),
++      expectedStatus: task.status === 'paused' ? 'paused' as const : 'active' as const,
+       ...contentChange(shown, storedValues),
+     }
+     let result: RemoteResult<ScheduleUpdateResult>
+@@ -781,7 +782,7 @@
+                   local stamp as well. */}
+               <span className={css.nextRunRelative}>{nextRun.relative}</span>
+             </p>
+-            : <p>{t('status.inactive')}</p>}
++            : <p>{t(`status.${task.status}`)}</p>}
+         </div>}
+         <div role="tabpanel" id={`${id}-rule-panel`} aria-labelledby={`${id}-rule-tab`}
+           hidden={tab !== 'rule' || deleted} tabIndex={0}>
+--- a/packages/client/ui-schedule/src/client/TaskManagerPage.tsx
++++ b/packages/client/ui-schedule/src/client/TaskManagerPage.tsx
+@@ -181,8 +181,8 @@
+                         <span className={css.rowContent}>
+                           <span className={css.rowTitle}>{taskName(record)}</span>
+                           <span className={css.rowSummary} id={`${detailId}-metadata-${record.id}`}>
+-                            {record.status === 'inactive'
+-                              && <span className={css.metadata}>{t('status.inactive')}</span>}
++                            {record.status !== 'active'
++                              && <span className={css.metadata}>{t(`status.${record.status}`)}</span>}
+                             <span className={css.metadata}>{frequency(record)}</span>
+                             {record.status === 'active' && <span className={css.metadata}>
+                               {t('list.nextPrefix')}<time dateTime={record.scheduledAt}>
+--- a/packages/client/ui-schedule/src/client/task-manager-locales.ts
++++ b/packages/client/ui-schedule/src/client/task-manager-locales.ts
+@@ -22,6 +22,7 @@
+   'statusFilter.all': 'All',
+   'status.active': 'Enabled',
+   'status.inactive': 'Inactive',
++  'status.paused': 'Paused',
+   'detail.label': 'Task details',
+   'detail.close': 'Close details',
+   'detail.more': 'Automation task actions',
+@@ -165,6 +166,7 @@
+   'statusFilter.all': '全部',
+   'status.active': '已开启',
+   'status.inactive': '已结束',
++  'status.paused': '已暂停',
+   'detail.label': '任务详情',
+   'detail.close': '关闭详情',
+   'detail.more': '自动化任务操作',
+--- a/packages/schedule/schedule/src/domain.ts
++++ b/packages/schedule/schedule/src/domain.ts
+@@ -1843,14 +1843,15 @@
+
+ /**
+  * Derive one execution-local management view.
+- * @param record - Active durable record.
++ * @param record - Active or paused durable record.
+  * @param now - Wall-clock sample used for its timing state.
++ * @param status - CAS 确认的持久状态；活动任务仍按时间计算，暂停优先。
+  * @returns Complete Host delivery view.
+  */
+-export function scheduleView(record: ScheduleRecord, now: number): ScheduleView {
++export function scheduleView(record: ScheduleRecord, now: number, status: 'active' | 'paused' = 'active'): ScheduleView {
+   return Object.freeze({
+     ...record,
+-    state: now >= Date.parse(record.scheduledAt) ? 'overdue' : 'scheduled',
++    state: status === 'paused' ? 'paused' : now >= Date.parse(record.scheduledAt) ? 'overdue' : 'scheduled',
+     deliveryMode: 'host',
+   })
+ }
+--- a/packages/client/ui-schedule/src/client/index.ts
++++ b/packages/client/ui-schedule/src/client/index.ts
+@@ -64,6 +64,13 @@ import { en as managerEn, zh as managerZh, type TaskManagerKey } from './task-ma
+ const MANAGER_NS = 'schedule.manager'
+ const PANEL_ID = 'schedules' as MainPanelId
+
++declare module '@deepseek-ai/cordis' {
++  interface Context {
++    /** 侧栏入口隐藏租约；释放后恢复，不改变原生计划和详情。 */
++    uiScheduleNavigation: { hide(): () => void }
++  }
++}
++
+ declare module '@deepseek-ai/dsh-client-ui-slots' {
+   interface LocaleNamespaceMap {
+     /** Active Schedule catalog copy. */
+@@ -175,13 +182,35 @@ export function apply(ctx: ClientContext): void {
+       onNewTask: () => { ctx.uiWorkspace.startSession() },
+     }),
+   }, TaskManagerPage))
+-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+-    name: 'sidebar.panellist',
+-    id: PANEL_ID,
+-    order: 10,
+-    locale: MANAGER_NS,
+-    label: () => t('panel'),
+-  }, TaskManagerIcon))
++  // 导航隐藏租约仅移除侧栏入口，原生计划与详情继续可用。
++  let navigationLeases = 0
++  let syncNavigation: () => void = () => {}
++  let navigationDisposed = false
++  ctx.effect(() => () => { navigationDisposed = true; syncNavigation = () => {} })
++  ctx.effect(() => ctx.provide('uiScheduleNavigation', {
++    hide() {
++      if (navigationDisposed) throw new Error('Schedule navigation disposed')
++      navigationLeases++
++      syncNavigation()
++      let released = false
++      return () => {
++        if (released) return
++        released = true
++        navigationLeases--
++        if (!navigationDisposed) syncNavigation()
++      }
++    },
++  }))
++  ctx.slots.inject('sidebar.panellist', () => {
++    let remove: (() => void) | undefined
++    const sync = () => {
++      if (navigationLeases > 0) { if (remove) { remove(); remove = undefined } }
++      else if (!remove) remove = ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, locale: MANAGER_NS, label: () => t('panel') }, TaskManagerIcon)
++    }
++    syncNavigation = sync
++    sync()
++    return () => { if (syncNavigation === sync) syncNavigation = () => {}; if (remove) { remove(); remove = undefined } }
++  })
+   // The created task is a Turn-level element, not a Tool-group row: the Turn
+   // Definition publishes the settled result and this tail list entry renders
+   // the card beneath the closing prose.

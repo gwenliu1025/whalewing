@@ -1,0 +1,50 @@
+{
+  "name": "dsh-whalewing",
+  "version": "0.1.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "鲸翼：专家团队、个人知识与持续技能沉淀",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./tools": "./tools.js",
+    "./experts": "./experts.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "tools.js", "experts.js", "client.js", "src", "content/roles.js", "content/skills", "content/learning", "content/model-world", "content/avatars", "content/utilities", "content/vault", "cordis.patch.yml", "README.md", "LICENSE", "NOTICE", "art/brand"],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs content/content.test.mjs",
+    "check": "node --check index.js && node --check tools.js && node --check experts.js && node --check client.js"
+  },
+  "dependencies": { "exceljs": "4.4.0", "docx": "9.10.0", "fflate": "0.8.3", "@xmldom/xmldom": "0.9.12", "saxes": "6.0.0", "pdf-lib": "1.17.1", "pdfjs-dist": "4.10.38", "pdfmake": "0.2.20", "d3-force": "3.0.0", "js-yaml": "4.2.0", "mdast-util-from-markdown": "2.1.0", "mdast-util-gfm": "3.1.0", "micromark-extension-gfm": "3.0.0", "qrcode-generator": "2.0.4", "jsqr": "1.4.0", "@breezystack/lamejs": "1.2.7" },
+  "devDependencies": { "esbuild": "0.25.12" },
+  "peerDependencies": {
+    "sharp": "0.35.5",
+    "zod": "~4.6.5",
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-sandbox": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-skill-filesystem": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-schedule": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-experimental-schedule-bundle": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-file-reference": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-web-fetch-http": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 <0.3.0-0"
+  },
+  "engines": { "node": "^22.19.0 || >=24" },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-sidebar", "@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-workspace", "@deepseek-ai/dsh-client-ui-input-trigger", "@deepseek-ai/dsh-client-locale"]
+    }
+  }
+}

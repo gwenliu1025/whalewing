@@ -1,0 +1,37 @@
+鲸翼 · 安装说明
+====================
+
+适用范围
+--------
+- 只支持 DeepSeek Harness 0.2.0-rc.2（Windows）。版本不对时安装器会直接提示，不会改动任何东西。
+- 安装前请先打开一次 DeepSeek Harness，进入主界面后完全退出（包括右下角托盘图标）。
+
+安装
+----
+1. 把整个压缩包解压到任意文件夹（不要直接在压缩包里双击）。
+2. 完全退出 DeepSeek Harness，双击“安装鲸翼.cmd”。
+3. 打开 DeepSeek Harness，左侧会出现“鲸翼”。
+
+收到新版本时，同样运行一次即可覆盖升级，知识库和数据都会保留。
+
+还原（卸载）
+------------
+完全退出 DeepSeek Harness，双击“还原鲸翼.cmd”。它会：
+- 把 DeepSeek Harness 的程序文件恢复成安装前的原版；
+- 从 DSH 配置里撤回鲸翼；
+- 删除安装器放进去的插件文件和备份。
+个人知识库（默认在 DeepSeek Harness 安装目录旁边的 whalewing-vault 文件夹）和插件数据不会删除，不需要时可以手动删掉。
+
+安装器改了什么
+--------------
+- DeepSeek Harness 安装目录下的 resources\app.asar：替换为适配版，原版备份在“用户目录\.dsh\whalewing\backup”。
+- “用户目录\.dsh\whalewing\plugin”：鲸翼插件文件。
+- “用户目录\.dsh\profiles\desktop\package.json”：登记鲸翼插件。
+- 不改你的会话、模型和其他插件设置。
+
+常见问题
+--------
+- 提示“还在运行”：DSH 关窗口后可能还在托盘里，右键托盘图标退出后重试。
+- 提示“无法写入 / 没有权限”：DSH 装在 Program Files 下时，右键安装文件“以管理员身份运行”。
+- DeepSeek Harness 升级之后：新版本会覆盖适配，鲸翼的部分功能会失效。请先不要升级 DSH；已经升级的话，等拿到对应新版本的安装包再装。此时运行还原不会覆盖新版程序。
+- 想确认当前状态：在本文件夹打开 PowerShell，运行 powershell -ExecutionPolicy Bypass -File files\run.ps1 -Command status

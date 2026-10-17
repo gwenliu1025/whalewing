@@ -1,0 +1,19 @@
+filters:
+  and:
+    - 'type == "atomic"'
+    - 'status == "seedling"'
+properties:
+  moc:
+    displayName: 主题
+  source:
+    displayName: 来源
+  updated:
+    displayName: 最近更新
+views:
+  - type: table
+    name: 幼苗知识
+    order:
+      - file.name
+      - moc
+      - source
+      - updated

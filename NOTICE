@@ -1,0 +1,33 @@
+鲸翼 WhaleWing
+Copyright 2026 鲸翼 WhaleWing 作者
+
+本插件的代码依 Apache License 2.0 授权，全文见 LICENSE。
+
+
+名称与标志
+----------
+“鲸翼”“WhaleWing”名称和“鲸尾为翼”标志（art/brand 下的全部文件）不在
+Apache License 2.0 的授权范围内（另见该许可第 6 条）。你可以按许可使用、修改和
+分发代码，但发布改版时须换用其他名称和标志，不得暗示改版由鲸翼作者发布或认可；
+如实写明“基于鲸翼”不受此限。
+
+
+模型世界立绘
+------------
+content/model-world/portraits 中的立绘及源码 art/model-world 中的原图依
+CC BY-NC-SA 4.0 单独授权，不适用 Apache License 2.0；商用须先取得作者授权。
+详见 content/model-world/portraits/NOTICE.md。
+
+
+第三方内容
+----------
+随插件分发的第三方代码、数据和内容保留各自的许可：
+
+- 工具台内联的第三方代码（其中 MP3 编码库为 LGPL-3.0）：
+  content/utilities/THIRD_PARTY_NOTICES.txt
+- 中文字体 Noto Sans SC（SIL Open Font License 1.1）：
+  content/utilities/NotoSansSC-LICENSE.txt
+- 模型目录数据 ai-model-world 与 models.dev（MIT）：
+  content/model-world/NOTICE.md 及同目录的 LICENSE 文件
+- 学习卡片引用的 OpenStax（CC BY 4.0）与 Microsoft（MIT）课程内容：
+  content/learning 下的许可文件

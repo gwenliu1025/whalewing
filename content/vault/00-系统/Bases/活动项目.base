@@ -1,0 +1,19 @@
+filters:
+  and:
+    - 'type == "project"'
+    - 'status == "active"'
+properties:
+  due:
+    displayName: 截止日期
+  area:
+    displayName: 所属领域
+  updated:
+    displayName: 最近更新
+views:
+  - type: table
+    name: 活动项目
+    order:
+      - file.name
+      - due
+      - area
+      - updated

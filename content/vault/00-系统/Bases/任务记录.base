@@ -1,0 +1,22 @@
+filters:
+  and:
+    - 'type == "output"'
+    - 'output_type == "task-record"'
+properties:
+  actual_date:
+    displayName: 实际日期
+  project:
+    displayName: 所属项目
+  status:
+    displayName: 状态
+  updated:
+    displayName: 最近更新
+views:
+  - type: table
+    name: 任务记录
+    order:
+      - file.name
+      - actual_date
+      - project
+      - status
+      - updated

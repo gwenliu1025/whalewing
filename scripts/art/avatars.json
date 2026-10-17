@@ -1,0 +1,24 @@
+{
+  "style": "original anime-style professional avatar, head-and-shoulders bust portrait, centered, facing the viewer with a friendly confident expression, plain soft solid background color filling the whole square, clean line art, soft cel shading, high detail, square 1:1 composition suitable for a small round avatar; no text, no letters, no logos, no watermark",
+  "characters": {
+    "manager": "a cheerful, capable young woman office assistant with dark hair and a small gold star hairpin, smart-casual cream blazer, holding a tablet near her chest; warm gold background (#E9BE65)",
+    "presales": "a confident businesswoman with neat shoulder-length hair, tailored navy suit, holding a presentation clicker; soft rose background",
+    "requirements": "a thoughtful young man business analyst with glasses, rolled-up shirt sleeves, holding a pen and colorful sticky notes; soft sky blue background",
+    "development": "a focused young man software engineer in a hoodie with headphones around his neck, a slim laptop under his arm; soft lavender background",
+    "implementation": "an energetic young woman implementation consultant with a ponytail, rolled-up sleeves, holding a clipboard with a spreadsheet; soft mint green background",
+    "testing": "a sharp-eyed young woman QA engineer with a short bob, holding a magnifying glass and a checklist; soft apricot background",
+    "operations": "a calm young man operations engineer wearing a headset microphone, dark work jacket, faint glowing server lights; soft slate blue background",
+    "preset-01": "a friendly middle-aged man in a light gray suit and tie, short neat hair; soft teal background",
+    "preset-02": "a young woman with long wavy brown hair in a beige knit cardigan, warm smile; soft peach background",
+    "preset-03": "a young man with short spiky hair in a casual denim jacket; soft sunny yellow background",
+    "preset-04": "a mature woman with an elegant short silver bob and pearl earrings, white blouse; soft lilac background",
+    "preset-05": "a young woman with twin braids and round glasses in a green sweater; soft sage background",
+    "preset-06": "a young man with wavy hair and a light beard in a white shirt; soft sand background",
+    "preset-07": "a young woman with a sleek high ponytail in a black turtleneck, cool and confident; soft ice blue background",
+    "preset-08": "a cheerful older man with gray hair and a cardigan, kind eyes; soft coral background",
+    "preset-09": "an adorable chibi orange cat mascot wearing a tiny office tie; soft cream background",
+    "preset-10": "a wise round owl mascot wearing small glasses and holding a tiny book; soft navy background",
+    "preset-11": "a clever red fox mascot wearing a small scarf, playful grin; soft orange-pink background",
+    "preset-12": "a friendly rounded white robot mascot with glowing cyan eyes; soft cyan background"
+  }
+}

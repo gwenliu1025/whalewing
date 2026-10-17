@@ -1,0 +1,219 @@
+{
+  "style": "Original character design. High-quality anime illustration of ONE elegant mature young woman (onee-san, about 23-26 years old, tall, long legs, adult face, calm confident expression), full body standing from head to shoes, centered, portrait 9:16, plain pure white background. Crisp clean line art, soft cel shading, rich costume detail, gacha-game character art quality. Tasteful and fully clothed.",
+  "logo": "The attached image is the official logo of the AI model she personifies ({logo}). Show it exactly once, SMALL and tasteful, on one small accessory she wears: {place}. It should be the size of a typical brooch (roughly 3-4% of her height, about as wide as her eye-to-eye distance) - small and tasteful, yet clearly visible at a glance, with a plain light or white backing so the logo stands out, faithful in shape and colors. Never put the logo on held items, weapons or props, never print it large on clothing, never make it a big emblem. Apart from that small logo, no text, letters or watermark.",
+  "rules": "This must be a completely original design: do not imitate any existing fan-art character of this AI model{avoid}.",
+  "characters": {
+    "deepseek": {
+      "logo": "DeepSeek's blue whale, #4D6BFE",
+      "colors": "DeepSeek blue #4D6BFE, deep navy and white",
+      "avoid": "; in particular NO maid outfit, NO apron, NO whale tail, NO fin ears",
+      "concepts": [
+        "a deep-sea explorer captain: long wavy ocean-blue hair in a low side braid, double-breasted navy naval coat over a white blouse, wide-brim captain hat, holding a brass spyglass; whale-shaped silver hairpin",
+        "a graceful ocean songstress: long straight dark-blue hair with lighter blue tips, flowing layered evening gown fading from white to deep blue like ocean depths, sheer shawl with wave patterns, holding a glowing blue pearl",
+        "a marine scientist: shoulder-length blue hair with a half-up bun, white lab coat worn open over a fitted navy dress, round glasses pushed up on her head, holding a tablet showing sonar waves"
+      ]
+    },
+    "deepseek-flash": {
+      "logo": "DeepSeek's blue whale, #4D6BFE",
+      "colors": "DeepSeek blue #4D6BFE, sky blue and white",
+      "child": "She is the little sister: a small cute little girl (about 8-10 years old, child proportions, big eyes, short stature) who is the childhood version of the woman in the second attached image - same hair color, same face, a child-sized cute version of the same outfit theme, holding a small toy version of her prop. Lively happy expression. Wholesome and fully clothed."
+    },
+    "openai": {
+      "logo": "OpenAI's black interlaced hexagonal knot",
+      "colors": "black, white and ChatGPT mint green #10A37F",
+      "avoid": "; in particular NO dragon horns, NO dragon wings, NO tail, NO white dress",
+      "concepts": [
+        "a serene oracle poet: very long white hair with a mint-green inner layer, layered white and black Greek-inspired chiton with fine mint-green trims and a sheer black stole, holding a white quill and a softly glowing scroll",
+        "a retro radio host (ChatGPT means conversation): glossy black hair in 1950s victory rolls, black-and-white polka-dot swing dress with a mint-green belt, vintage studio microphone on a stand beside her, mint headset around her neck",
+        "an elegant florist (the OpenAI mark looks like a blossom): soft ash-blonde hair in a loose low bun, white blouse, long black wrap skirt, mint-green waist sash, carrying a large bouquet of white flowers and mint leaves in her arms"
+      ]
+    },
+    "anthropic": {
+      "logo": "Claude's terracotta orange starburst with radiating rays",
+      "colors": "terracotta orange #D97757, cream, warm ivory and soft brown",
+      "avoid": "; in particular NO very long straight orange hair, NO black-and-orange gothic dress",
+      "concepts": [
+        "a thoughtful writer: chestnut-brown hair in a loose low chignon with a few strands, cream knit cardigan over a terracotta midi dress, leather satchel full of manuscripts, holding a fountain pen",
+        "an artisan potter: copper-red hair in a short wavy bob, linen apron dress in cream over a terracotta blouse with rolled sleeves, holding a hand-made clay vase",
+        "a gentle librarian-guide: long soft auburn hair half-tied with a ribbon, ivory high-neck blouse, terracotta long pleated skirt, a short cape, holding a small brass lantern"
+      ]
+    },
+    "google": {
+      "logo": "Gemini's four-pointed sparkle star with a blue gradient touched with red, yellow and green",
+      "colors": "Gemini blue #4285F4 to violet gradient, white, small accents of Google red, yellow and green",
+      "avoid": "; in particular NO cat ears, NO cat tail",
+      "concepts": [
+        "a stargazing astronomer: long gradient blue-to-violet hair in a side ponytail, midnight-blue long coat lined with constellation patterns over a white dress, holding a brass telescope",
+        "a twin-star idol (Gemini means twins): long silver-blue hair in two low twin tails, white-and-blue stage dress with four-pointed star sequins, holding a star-topped microphone",
+        "a calm sorceress: wavy indigo hair, flowing white robe with a blue gradient overskirt and colorful thin trims in Google colors, holding a slender silver staff"
+      ]
+    },
+    "alibaba": {
+      "logo": "Qwen's purple hexagonal triangle knot",
+      "colors": "Qwen indigo-violet #615CED, lavender and white, with a touch of Alibaba Cloud orange",
+      "avoid": "; in particular NO folding fan, NO hair bun with tassels like the existing fan art",
+      "concepts": [
+        "a modern qipao lady: violet hair in a sleek low ponytail, fitted lavender qipao with cloud embroidery under a short white cropped jacket, holding a glowing lantern",
+        "a curious scholar of a thousand questions: long lavender hair with braided crown, layered white and violet scholar robes with floating cloud motifs, holding an open scroll of light",
+        "a cloud architect: short violet bob, white tailored dress with geometric hexagon patterns, orange accent belt, holding floating translucent hexagon tiles"
+      ]
+    },
+    "moonshotai": {
+      "logo": "Kimi's bold black letter K with a small blue dot",
+      "colors": "black, white, silver and a small bright blue accent (the dark side of the moon)",
+      "avoid": "; in particular NO crescent-moon hair ornament like the existing fan art",
+      "concepts": [
+        "a lunar astronaut: silver-white long hair in a high ponytail, sleek white-and-black space suit dress with a clear helmet held under one arm, moon-phase patches on the sleeve",
+        "a night pianist: long black hair with silver inner color, elegant black off-shoulder gown with a starry silver hem, holding sheet music; a small prism brooch",
+        "a moon priestess: long white hair, black-and-silver layered robe with a large full-moon circle behind her shoulders as a halo ornament, holding a silver bell"
+      ]
+    },
+    "zhipuai": {
+      "logo": "Zhipu's blue radial cluster of dots",
+      "colors": "Zhipu royal blue #3859FF, white and light gray",
+      "avoid": "; in particular NO Go board, NO Go stones, NO black-and-white gothic dress with animal tail",
+      "concepts": [
+        "a university professor: dark navy hair in a neat low bun with a pencil through it, slim rimless glasses, white blouse, royal-blue long vest dress, holding a thick book",
+        "a spectrum mage: long blue hair fading to white, white robe with prism-like light refracting into blue spectrum ribbons, holding a floating crystal",
+        "a data analyst: short blue hair with side bangs, white tech blazer and pleated skirt with dot-pattern trims, holding a holographic chart"
+      ]
+    },
+    "bytedance-seed": {
+      "logo": "Doubao's rounded ring shape in purple, blue and mint green",
+      "colors": "Doubao blue-purple, mint green and white",
+      "avoid": "; in particular NO bean-shaped doll head toy",
+      "concepts": [
+        "a cheerful bakery owner (doubao means steamed bun): light-brown hair in a fluffy side braid, mint-green dress with a white overskirt and puffy sleeves, holding a tray of steamed buns",
+        "a stylish streetwear creator: blue-purple gradient long hair, oversized white hoodie dress with mint stripes, sneakers, holding a smartphone with a camera gimbal",
+        "a friendly assistant hostess: wavy mint-tinted hair, elegant purple-blue blazer dress, holding a speech-bubble-shaped tablet"
+      ]
+    },
+    "minimax": {
+      "logo": "MiniMax's red-to-pink sound waveform",
+      "colors": "MiniMax coral red to pink gradient, white and black",
+      "avoid": "; in particular NO shoulder film-clapper bag, NO plaid skirt",
+      "concepts": [
+        "a concert singer: long coral-pink hair in loose waves, red-to-pink gradient stage gown with waveform sequins, holding a vintage microphone",
+        "a seashell muse (Hailuo means conch): long pink hair with pearl clips, white and coral dress with conch-shell spiral details, holding a large glowing conch",
+        "a film director: red bob haircut with sunglasses on her head, black trench coat over a pink dress, holding a cinema camera"
+      ]
+    },
+    "mistral": {
+      "logo": "Mistral's pixel-block letter M in yellow, orange and red",
+      "colors": "Mistral orange, amber yellow, red and cream",
+      "avoid": "; in particular NO baguette, NO red feathered hat",
+      "concepts": [
+        "a wind spirit (mistral is a cold wind of southern France): long amber hair blown by the wind, flowing cream and orange layered dress with wind swirl patterns, holding a fluttering scarf",
+        "a Parisian artist: orange-red hair in a short wavy bob under a beret, cream blouse, orange high-waist skirt, holding a paint palette",
+        "a pixel knight: long golden hair in a braid, light armor with pixel-block patterns in yellow-orange-red, holding a pixel-styled sword"
+      ]
+    },
+    "meta": {
+      "logo": "Meta's blue infinity loop",
+      "colors": "Meta blue #0866FF, white and soft cream",
+      "avoid": "; in particular NO oversized fluffy white sweater, NO sheep slippers",
+      "concepts": [
+        "a llama-ranch girl (Llama models): long cream hair in two loose braids, soft llama-wool poncho in blue and white over a long dress, holding the lead of a small fluffy llama plushie",
+        "a virtual reality architect: short blue hair, sleek white jumpsuit with blue light lines, VR visor pushed up on her head, holding a glowing infinity ribbon",
+        "an open-source librarian: long wavy light-brown hair, blue cardigan dress, carrying a stack of open books, a llama-shaped pin"
+      ]
+    },
+    "perplexity": {
+      "logo": "Perplexity's teal geometric asterisk",
+      "colors": "Perplexity teal #20808D, dark slate and off-white",
+      "avoid": "; in particular NO tall staff with the logo on top, NO compass and lantern",
+      "concepts": [
+        "an answer-seeking detective: long teal hair in a low ponytail, slate-gray trench coat over off-white shirt, holding a magnifying glass",
+        "a cartographer: wavy dark-teal hair, off-white blouse with teal corset vest, holding a rolled map with a teal ribbon",
+        "a modern reference librarian: sleek teal bob, slate long dress with geometric asterisk embroidery, holding an open book emitting citation-like light threads"
+      ]
+    },
+    "tencent": {
+      "logo": "Tencent Hunyuan's blue circular swirl",
+      "colors": "Tencent blue #0052D9, sky blue and white",
+      "avoid": "; in particular NO long red scarf, NO black long coat",
+      "concepts": [
+        "a Taoist sage of primordial unity (hunyuan): long black-blue hair in a high crown topknot, flowing white and blue hanfu robes with swirling cloud patterns, holding a glowing swirling orb",
+        "a penguin-themed lady (Tencent mascot): short sky-blue hair, white-and-black tailcoat dress with a yellow-orange scarf ribbon, small penguin plush on her shoulder",
+        "a game producer: long blue-gradient hair, white tech jacket and pleated skirt, holding a game controller"
+      ]
+    },
+    "xai": {
+      "logo": "Grok's black circle with a diagonal slash",
+      "colors": "black, white and chrome silver",
+      "avoid": "; in particular NO X-shaped great axe, NO blonde twin tails, NO black-and-gold gothic dress",
+      "concepts": [
+        "a rebel space pilot: short silver hair, black flight jacket over a white bodysuit, chrome boots, holding a pilot helmet",
+        "a witty stand-up storyteller: long black hair with white streak, sharp black suit dress with a white shirt and loose tie, holding a microphone, smirking",
+        "a starship navigator: long platinum hair in a braid, monochrome black-and-white uniform with chrome trims, holding a glowing star chart"
+      ]
+    },
+    "baidu": {
+      "logo": "ERNIE's blue hexagon with an inner square",
+      "colors": "Baidu blue #2932E1, white and light silver",
+      "avoid": "; in particular NO wheelchair, NO medical equipment",
+      "concepts": [
+        "a calligrapher (wenxin means literary heart): long black hair in a low ponytail with a blue ribbon, white and blue modern hanfu, holding a large brush",
+        "a bear-paw explorer (Baidu paw logo spirit): short blue-black hair, white field jacket and blue skirt, holding a lantern, small paw-print patterns",
+        "a search-engine navigator: long silver-blue hair, white long coat with blue hexagon patterns, holding a glowing search orb"
+      ]
+    },
+    "xiaomi": {
+      "logo": "Xiaomi MiMo: an orange rounded-square badge with the white lowercase letters 'mi'",
+      "colors": "Xiaomi orange #FF6900, white and soft gray",
+      "avoid": "",
+      "concepts": [
+        "a racing engineer for an electric sports car: orange hair in a high ponytail, fitted orange-and-white racing jacket with a long white skirt, wireless headset, holding a racing helmet under one arm",
+        "a cheerful Mi Bunny themed lady (Xiaomi mascot): warm orange wavy hair, orange fur-trimmed ushanka-style hat with long bunny ears, cozy white coat dress with orange trims, hugging a white bunny plush",
+        "a robotics engineer: short orange bob with white streaks, white tech jumpsuit with orange panels, a sleek silver four-legged robot dog companion standing beside her, holding a small controller"
+      ]
+    },
+    "meituan": {
+      "logo": "LongCat's bright green cat head with two ears",
+      "colors": "Meituan yellow #FFD100, LongCat green, black and white",
+      "avoid": "",
+      "concepts": [
+        "a stylish delivery rider: black hair in a high ponytail, yellow jacket with kangaroo-ear-shaped helmet tucked under her arm, black skirt, holding a yellow delivery box",
+        "a cat-themed lady (LongCat): long pale-gold hair, small cat ears headband, yellow and white dress with green trims, holding a cat plush",
+        "a food critic: wavy brown hair, elegant yellow long dress with black belt, holding chopsticks and a menu"
+      ]
+    },
+    "stepfun": {
+      "logo": "StepFun's blue staircase step mark with a small plus",
+      "colors": "StepFun blue #2B4BEB, violet and white",
+      "avoid": "",
+      "concepts": [
+        "a stair-climbing star seeker: long deep-blue hair fading to violet, white dress with step-shaped hem layers, holding a short wand topped with a star",
+        "a dancer mid-step: blue hair in a high bun, blue and white ballet-inspired dress, one foot on a floating stair block",
+        "an architect: short violet bob, white blazer dress with blue geometric step patterns, holding blueprints"
+      ]
+    }
+  },
+  "place": [
+    "a small brooch pinned at her collar or chest",
+    "a small hair clip or hair ornament",
+    "a small badge card or charm hanging from her belt or bag strap"
+  ],
+  "retouch": "Use your image generation tool to EDIT the first attached image and produce ONE image. Keep the character, face, hair, outfit, pose, props, colors, art style and white background exactly the same. Only change the brand logo: remove every logo, emblem or logo-like print from her clothing, hat, held items, weapons and props (fill those areas naturally with the surrounding fabric or material). Then add the logo from the second attached image ({logo}) exactly once, small and tasteful, as {place}: the size of a typical brooch (roughly 3-4% of her height, about as wide as her eye-to-eye distance) - small and tasteful, yet clearly visible at a glance, with a plain light or white backing so the logo stands out, faithful in shape and colors. No other text or watermark.",
+  "picks": {
+    "deepseek": "2",
+    "deepseek-flash": "2",
+    "openai": "1",
+    "anthropic": "3",
+    "google": "2",
+    "xai": "3",
+    "alibaba": "2",
+    "moonshotai": "2",
+    "zhipuai": "2",
+    "bytedance-seed": "1",
+    "minimax": "2",
+    "baidu": "1",
+    "tencent": "1",
+    "xiaomi": "2",
+    "meituan": "2",
+    "stepfun": "1",
+    "mistral": "1",
+    "meta": "1",
+    "perplexity": "2"
+  }
+}

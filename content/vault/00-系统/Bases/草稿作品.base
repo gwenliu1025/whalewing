@@ -1,0 +1,19 @@
+filters:
+  and:
+    - 'type == "output"'
+    - 'status == "draft"'
+properties:
+  output_type:
+    displayName: 作品类型
+  project:
+    displayName: 相关项目
+  updated:
+    displayName: 最近更新
+views:
+  - type: table
+    name: 草稿作品
+    order:
+      - file.name
+      - output_type
+      - project
+      - updated
