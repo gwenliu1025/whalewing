@@ -4,7 +4,8 @@ import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WhalewingCore } from '../src/service.js';
-import { Automation } from '../src/automation.js';
+import { automationIdentity } from '../src/identity.js';
+import { Automation } from '../features/automation/automation.js';
 
 const note = title => `---\ntype: atomic\nstatus: seedling\ncreated: 2026-10-12\nupdated: 2026-10-12\naliases: []\n---\n\n# ${title}\n\n测试来源有依据的工作结论。\n`;
 async function fixture(t, count = 45) {
@@ -159,7 +160,7 @@ async function scopedFixture(t) {
   const schedule = { catalog: async () => task ? [{ ...task, sessionId: 'knowledge', status: 'active' }] : [], create: async (_id, spec) => (task = { ...spec, id: 'scope-task' }) };
   h.dependencies.schedule = () => schedule;
   h.dependencies.readSourceScope = (accept, signal) => { signal?.throwIfAborted(); return accept({ tasks: task ? [{ ...task, sessionId: 'knowledge', status: 'active' }] : [], workspaces }); };
-  const owner = new Automation({ schedule: () => schedule, listWorkspaces: h.dependencies.listWorkspaces, projections: async () => ({ values: { whalewingAutomation: 'knowledge' } }), prepareModel: async () => {}, confirmClaim: async () => {} });
+  const owner = new Automation({ schedule: () => schedule, listWorkspaces: h.dependencies.listWorkspaces, projections: async () => ({ asOfSeq: 0, values: { whalewingAutomation: 'knowledge' } }), prepareModel: async () => {}, confirmClaim: async () => {} });
   async function scope(workspaceScope) {
     task = undefined;
     await owner.manage({ action: 'create', sessionId: 'knowledge', purpose: 'knowledge', spec: { daily: { time: '00:15', time_zone: 'Asia/Shanghai' } }, workspaceScope });
@@ -300,4 +301,16 @@ test('同步门后撤回不伪回滚已接纳覆盖，磁盘写入及readback继
   assert.equal((await pending).completed, true);
   assert.deepEqual((await h.core.vault.settings()).profileCoverage.through, [{ sessionId: 's-000', throughSeq: 0 }]);
   await assert.rejects(h.core.execute({ action: 'source_read', sessionId: 's-000' }, h.actor), { code: 'SOURCE_SCOPE' });
+});
+
+
+test('迁移提示只形成来源issues，普通精确来源继续返回且不推进未知覆盖', async t => {
+  const h = await fixture(t, 2);
+  h.dependencies.automationIdentity = async id => automationIdentity(async () => id === 's-000'
+    ? { kind: 'migration-required', asOfSeq: 0, values: { whalewingAutomation: null } }
+    : { kind: 'sequenced', asOfSeq: 0, values: { whalewingAutomation: h.purposes.get(id) ?? null } }, id);
+  const result = await h.core.execute({ action: 'sources' }, h.actor);
+  assert.deepEqual(result.sources.map(row => row.sessionId), ['s-001']);
+  assert.equal(result.issues[0].sessionId, 's-000'); assert.match(result.issues[0].message, /升级/);
+  assert.deepEqual((await h.core.vault.settings()).profileCoverage.through, []);
 });

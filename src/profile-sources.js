@@ -1,5 +1,6 @@
 import { abort, fail } from './vault.js';
-import { observeAutomation, automationPresentation, selectWorkspaceRows } from './automation.js';
+import { automationPresentation, selectWorkspaceRows } from '../features/automation/automation.js';
+import { observeAutomation } from './identity.js';
 
 const order = (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id);
 const ordinary = header => header.origin !== 'subagent' && !(header.delegationDepth > 0);

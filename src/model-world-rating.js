@@ -1,4 +1,4 @@
-import { worldBenchmarks, worldDimensions } from './model-world-contract.js';
+import { worldBenchmarks, worldDimensions } from '../features/model-world/contract.js';
 import { matchWorldIndex, strongestEffort, worldTierFor } from './model-world-index.js';
 
 const round = value => Math.round(value * 10) / 10;

@@ -1,0 +1,6 @@
+{
+  "name": "dsh-whalewing-toolbox",
+  "type": "module",
+  "description": "在本地转换和处理办公文件。",
+  "icon": "./icon.svg"
+}

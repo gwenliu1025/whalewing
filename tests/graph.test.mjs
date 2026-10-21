@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vault } from '../src/vault.js';
-import { knowledgeContract } from '../src/knowledge-contract.js';
+import { knowledgeContract } from '../features/knowledge/contract.js';
 import { createGraphCanvas, createGraphLayout } from '../src/graph-canvas.js';
 import { z } from 'zod';
+import { forceSimulation, forceLink as nativeLink, forceManyBody as nativeManyBody, forceCollide as nativeCollide } from 'd3-force';
 
 test('连接度由完整索引去重邻居计算，双向、自环、分页和过滤不改变同一笔记大小', async () => {
   const vault = new Vault(process.cwd(), { maxGraphNodes: 1 });
@@ -544,4 +545,179 @@ for (const [nodeCount, edgeCount] of [[300, 50000], [1000, 200000]]) test(`图�
   assert.ok(measured.widestFrame < 100, `最长计算帧 ${measured.widestFrame} ms`);
   t.diagnostic(JSON.stringify({ nodeCount, edgeCount, elapsedMs: Math.round(elapsed), longestComputeFrameMs: Math.round(measured.widestFrame), raster: '未在Node测量；真实Canvas由浏览器验收' }));
   h.unmount(); assert.equal(h.frames.size, 0);
+});
+
+test('反向首见的邻接去重保持边顺序、全部300tick坐标速度和固定点，不改输入', () => {
+  const graph = topology(4, [[1, 0], [2, 1], [0, 1], [1, 1], [0, 2], [1, 2], [1, 0]]);
+  Object.assign(graph.nodes[0], { x: 12.5, y: -7.5, vx: 0.25, vy: -0.5 });
+  Object.assign(graph.nodes[1], { fx: 40, fy: 60 });
+  const before = structuredClone(graph);
+  // 显式首见规范边序列是输入事实；两侧都使用同一个D3实现，不另写力算法。
+  const canonical = { nodes: structuredClone(graph.nodes), edges: [[0, 1], [1, 2], [0, 2]].map(([a, b]) => ({ source: `${a}`, target: `${b}` })) };
+  for (const item of [...graph.nodes, ...graph.edges, graph.nodes, graph.edges, graph]) Object.freeze(item);
+  const actual = createGraphLayout(graph), expected = createGraphLayout(canonical);
+  assert.deepEqual(actual.edges, [[0, 1], [1, 2], [0, 2]]);
+  assert.deepEqual(actual.neighbors.map(values => [...values]), [[1, 2], [0, 2], [1, 0], []]);
+  assert.deepEqual(actual.nodes, expected.nodes);
+  for (let step = 0; step < 300; step++) {
+    actual.simulation.tick(); expected.simulation.tick();
+    assert.deepEqual(actual.nodes, expected.nodes);
+  }
+  actual.simulation.stop(); expected.simulation.stop();
+  assert.deepEqual([actual.nodes[1].x, actual.nodes[1].y], [40, 60]);
+  assert.deepEqual(graph, before);
+  for (const edge of [{ source: '0', target: 'outside' }, { source: 'outside', target: 'outside' }]) {
+    assert.throws(() => createGraphLayout({ ...graph, edges: [edge] }), /图谱边缺少端点/);
+  }
+});
+
+test('中途resize与重置不发布未完成坐标，隐藏恢复后的最终几何与连续布局一致', t => {
+  const graph = topology(30, Array.from({ length: 29 }, (_, i) => [i, i + 1]));
+  let now = 0;
+  const h = harness(t, graph, { clock: () => ++now });
+  h.flush(1); assert.equal(h.geometry().arcs.length, 0);
+  assert.equal(h.render().props.children[0].props['aria-busy'], true);
+  h.element.getBoundingClientRect = () => ({ left: 0, top: 0, width: 600, height: 340 });
+  for (const observer of h.observers) observer.fn();
+  h.render().props.children[1].props.onClick(); h.flush(1);
+  assert.equal(h.geometry().arcs.length, 0); assert.equal(h.geometry().lines, 0);
+  h.document.hidden = true; h.document.fire('visibilitychange');
+  assert.equal(h.frames.size, 0); h.flush();
+  assert.equal(h.geometry().arcs.length, 0);
+  assert.equal(h.render().props.children[0].props['aria-busy'], true);
+  h.document.hidden = false; h.document.fire('visibilitychange'); h.flush();
+  assert.equal(h.render().props.children[0].props['aria-busy'], false);
+  const actual = structuredClone({ arcs: h.geometry().arcs, labels: h.geometry().labels, segments: h.geometry().segments });
+  assert.equal(actual.arcs.length, 30); assert.equal(actual.segments.length, 29);
+  h.unmount(); assert.equal(h.frames.size, 0); assert.equal(h.timers.size, 0);
+  // 先销毁旧组件再换全局浏览器夹具；参考仍走真实组件的完整布局与最终fit。
+  const continuous = harness(t, graph, { width: 600, height: 340 }); continuous.flush();
+  assert.deepEqual(actual, { arcs: continuous.geometry().arcs, labels: continuous.geometry().labels, segments: continuous.geometry().segments });
+  continuous.unmount(); assert.equal(continuous.frames.size, 0); assert.equal(continuous.timers.size, 0);
+});
+
+/** 独立对照：同一布局把连线、电荷与碰撞换回安装的 d3-force 原生力，配置与边从生产布局读取，不另抄参数。 */
+const natives = {
+  charge: force => nativeManyBody().strength(force.strength()).theta(force.theta()).distanceMin(force.distanceMin()).distanceMax(force.distanceMax()),
+  collision: force => nativeCollide(force.radius()).strength(force.strength()).iterations(force.iterations()),
+};
+function nativeTwin(graph) {
+  const layout = createGraphLayout(graph);
+  layout.simulation.force('link', nativeLink(layout.edges.map(([source, target]) => ({ source, target }))).distance(layout.simulation.force('link').distance()));
+  for (const [name, make] of Object.entries(natives)) layout.simulation.force(name, make(layout.simulation.force(name)));
+  return layout;
+}
+function countRandom(layout) {
+  const source = layout.simulation.randomSource(), counter = { calls: 0 };
+  layout.simulation.randomSource(() => { counter.calls++; return source(); });
+  return counter;
+}
+/** 两侧逐tick推进并严格比较全部节点字段、alpha和随机数消费次数；返回生产侧随机消费总数。 */
+function lockstep(pairs, ticks = 300, between = () => {}) {
+  const counters = pairs.map(([actual, expected]) => [countRandom(actual), countRandom(expected)]);
+  pairs.forEach(([actual, expected]) => assert.deepEqual(actual.nodes, expected.nodes));
+  for (let step = 1; step <= ticks; step++) {
+    for (const [actual, expected] of pairs) { actual.simulation.tick(); expected.simulation.tick(); }
+    between(step);
+    pairs.forEach(([actual, expected], i) => {
+      assert.deepEqual(actual.nodes, expected.nodes, `第${step}tick坐标或速度不同`);
+      assert.equal(actual.simulation.alpha(), expected.simulation.alpha());
+      assert.equal(counters[i][0].calls, counters[i][1].calls, `第${step}tick随机数消费不同`);
+    });
+  }
+  for (const pair of pairs) for (const layout of pair) layout.simulation.stop();
+  return counters.map(([counter]) => counter.calls);
+}
+const twins = (graph, prepare = () => {}) => [createGraphLayout(graph), nativeTwin(graph)].map(layout => { prepare(layout.nodes); return layout; });
+const ring = count => topology(count, Array.from({ length: count }, (_, i) => [i, (i + 1) % count]));
+
+test('连线、电荷与碰撞改存放方式后，与原生d3-force逐tick相同：重合、单轴重合与随机消费', () => {
+  // 全部重合时两种力都要靠随机抖动分开；单轴重合只在一个分量触发抖动。
+  const [coincident] = lockstep([twins(ring(24), nodes => nodes.forEach(node => { node.x = 0; node.y = 0; }))]);
+  assert.ok(coincident > 0, '重合坐标确实消费随机数');
+  const axes = lockstep([
+    twins(ring(20), nodes => nodes.forEach((node, i) => { node.x = 5; node.y = i * 3; })),
+    twins(ring(20), nodes => nodes.forEach((node, i) => { node.x = i * 3; node.y = -5; })),
+  ]);
+  assert.ok(axes.every(calls => calls > 0), '单轴重合确实消费随机数');
+  // 完整布局里连线力先把重合点抖开；单独运行每种力，覆盖它自己的抖动分支。
+  for (const name of Object.keys(natives)) {
+    const graph = ring(24), force = createGraphLayout(graph).simulation.force(name);
+    const alone = make => { const nodes = createGraphLayout(graph).nodes.map(node => Object.assign(node, { x: 0, y: node.index % 2 })); return { nodes, simulation: forceSimulation(nodes).stop().force(name, make(force)) }; };
+    const [calls] = lockstep([[alone(() => force), alone(natives[name])]]);
+    assert.ok(calls > 0, `${name} 单独运行确实消费随机数`);
+  }
+});
+
+test('连线、电荷与碰撞改存放方式后，与原生d3-force逐tick相同：固定点、初速度、孤点、空边与空图', () => {
+  const pinned = topology(16, [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5]]);
+  Object.assign(pinned.nodes[0], { fx: 40, fy: 60 });
+  Object.assign(pinned.nodes[1], { x: 12.5, y: -7.5, vx: 0.25, vy: -0.5 });
+  Object.assign(pinned.nodes[6], { x: 40, y: 60, vx: -3, vy: 2 });
+  const [actual] = twins(pinned);
+  lockstep([[actual, nativeTwin(pinned)], twins(topology(40, [])), twins(topology(1, [])), twins({ nodes: [], edges: [] })]);
+  assert.deepEqual([actual.nodes[0].x, actual.nodes[0].y], [40, 60]);
+});
+
+test('连线、电荷与碰撞改存放方式后，与原生d3-force逐tick相同：稠密图、多实例交错、重新初始化与缓冲复用', () => {
+  const count = 300;
+  const dense = { nodes: Array.from({ length: count }, (_, i) => ({ path: `${i}`, title: `知识 ${i}`, degree: count - 1 })), edges: Array.from({ length: 50000 }, (_, i) => ({ source: `${i % count}`, target: `${(i % count + 1 + Math.floor(i / count)) % count}` })) };
+  const mixed = topology(60, [...Array.from({ length: 20 }, (_, i) => [0, i + 1]), ...Array.from({ length: 19 }, (_, i) => [21 + i, 22 + i])]);
+  // 两张图交错推进，第150tick重新登记节点；任何实例间共享栈或树都会在这里分叉。
+  const pairs = [twins(dense), twins(mixed)];
+  lockstep(pairs, 300, step => { if (step === 150) for (const pair of pairs) for (const layout of pair) layout.simulation.nodes(layout.nodes); });
+  // 定长缓冲只增不减：同一力实例换成更少再更多的节点后，旧槽位不能混进新树或新速度。
+  for (const name of Object.keys(natives)) {
+    const graph = topology(80, []), force = createGraphLayout(graph).simulation.force(name);
+    const alone = make => { const nodes = createGraphLayout(graph).nodes; return { nodes, simulation: forceSimulation(nodes).stop().force(name, make(force)) }; };
+    const pair = [alone(() => force), alone(natives[name])];
+    lockstep([pair], 300, step => { if (step === 100 || step === 200) for (const side of pair) side.simulation.nodes(step === 100 ? side.nodes.slice(0, 30) : side.nodes); });
+  }
+});
+
+test('悬停邻域逐帧渐入渐出，指针在节点间快速掠过时非邻域每帧变化有界，坐标不动', t => {
+  let now = 0;
+  const h = harness(t, small, { clock: () => ++now }); h.flush();
+  const before = structuredClone(h.geometry().arcs), at = before[0], isolated = () => h.geometry().fills[2].alpha;
+  assert.ok(h.geometry().fills.every(fill => fill.alpha === 1));
+  h.element.fire('pointermove', { clientX: at.x, clientY: at.y }); h.flush(1);
+  assert.ok(isolated() > 0.5 && isolated() < 1, `首帧不直接压到最暗 ${isolated()}`);
+  h.flush(); assert.ok(Math.abs(isolated() - 0.18) < 1e-9);
+  h.element.fire('pointerleave'); h.flush(1);
+  assert.ok(isolated() > 0.18 && isolated() < 0.5, `离开首帧不直接恢复全亮 ${isolated()}`);
+  h.flush(); assert.equal(isolated(), 1);
+  // 每帧交替进出节点：最暗与全亮相差0.82，单帧最多推进一个60Hz帧（渐入140ms中的16ms）。
+  let last = isolated();
+  for (let i = 0; i < 24; i++) {
+    h.element.fire('pointermove', i % 2 ? { clientX: 3, clientY: 3 } : { clientX: at.x, clientY: at.y }); h.flush(1);
+    assert.ok(Math.abs(isolated() - last) <= 0.82 * 16 / 140 + 1e-9, `第${i}帧跳变 ${last} → ${isolated()}`);
+    last = isolated();
+  }
+  h.element.fire('pointerleave'); h.flush();
+  assert.deepEqual(h.geometry().arcs, before); assert.equal(isolated(), 1); assert.equal(h.frames.size, 0);
+});
+
+test('新图从布局中心向外渐显，坐标与半径始终是收敛结果；偏好改为减弱动态即刻完整并在卸载时退订', t => {
+  let now = 0;
+  const graph = topology(31, Array.from({ length: 30 }, (_, i) => [0, i + 1]));
+  const h = harness(t, graph, { clock: () => ++now });
+  while (!h.geometry().arcs.length) h.flush(1);
+  const arcs = structuredClone(h.geometry().arcs);
+  for (let i = 0; i < 200 && h.geometry().fills[0].alpha < 0.5; i++) { h.flush(1); assert.deepEqual(h.geometry().arcs, arcs); }
+  const alphas = h.geometry().fills.map(fill => fill.alpha);
+  assert.ok(alphas[0] >= 0.5 && Math.max(...alphas.slice(1)) < alphas[0], '中心先于外围显现');
+  assert.ok(h.geometry().fills.some(fill => fill.alpha < 1));
+  h.media.matches = true; h.media.fire('change'); h.flush(1);
+  assert.ok(h.geometry().fills.every(fill => fill.alpha === 1)); assert.equal(h.frames.size, 0);
+  assert.deepEqual(h.geometry().arcs, arcs);
+  h.unmount(); assert.equal(h.media.count(), 0);
+});
+
+test('系统减弱动态时首个可见帧即完整显示，悬停立即切换', t => {
+  const h = harness(t, small, { reduced: true });
+  while (!h.geometry().arcs.length) h.flush(1);
+  assert.ok(h.geometry().fills.every(fill => fill.alpha === 1));
+  const at = h.geometry().arcs[0];
+  h.element.fire('pointermove', { clientX: at.x, clientY: at.y }); h.flush(1);
+  assert.ok(Math.abs(h.geometry().fills[2].alpha - 0.18) < 1e-9); assert.equal(h.frames.size, 0);
 });

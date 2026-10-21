@@ -1,9 +1,13 @@
+import Cards from '../features/cards/host.js';
+import { LockedDomain } from '../src/host/locked-domain.js';
+import { newsContract } from '../features/cards/contract.js';
 import test from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { Automation, automationProjection, legacySchedulePrefix, knowledgeTaskPrompt, automationPresentation } from '../src/automation.js';
-import { automationContract } from '../src/automation-contract.js';
+import { Automation, legacySchedulePrefix, knowledgeTaskPrompt, automationPresentation } from '../features/automation/automation.js';
+import { automationProjection } from '../src/identity.js';
+import { automationContract } from '../features/automation/contract.js';
 import { Context } from '@deepseek-ai/cordis';
 import Storage from '@deepseek-ai/dsh-storage';
 import * as StorageJson from '@deepseek-ai/dsh-storage-json';
@@ -27,13 +31,17 @@ function fixture() {
   };
   const dependencies = {
     schedule: () => schedule,
-    projections: async id => ({ values: { whalewingAutomation: purposes.get(id) ?? null, whalewingWorkbench: id === 'legacy' } }),
+    projections: async id => ({ asOfSeq: 0, values: { whalewingAutomation: purposes.get(id) ?? null, whalewingWorkbench: id === 'legacy' } }),
     confirmClaim: async () => calls.push('flush'),
     prepareModel: async () => calls.push('model'),
   };
   const owner = new Automation(dependencies);
-  const create = (sessionId = 'auto', purpose = purposes.get(sessionId)) => owner.manage({ action: 'create', sessionId, purpose, spec: { title: '任务', prompt: '员工指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } } });
-  return { owner, dependencies, schedule, records, purposes, calls, create };
+  const news = { initialize: async () => {}, withScheduleSpec: async () => { throw Object.assign(new Error('资讯未就绪'), { code: 'NEWS_UNAVAILABLE' }); } };
+  const cards = Object.assign(Object.create(Cards.prototype), { resource: new LockedDomain({}), ctx: { get: () => dependencies.schedule(), whalewingAutomation: { automation: owner } }, newsOwner: async () => news });
+  const create = (sessionId = 'auto', purpose = purposes.get(sessionId)) => purpose === 'news'
+    ? cards.manageSchedules({ action: 'create', sessionId, purpose })
+    : owner.manage({ action: 'create', sessionId, purpose, spec: { title: '任务', prompt: '员工指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } } });
+  return { owner, cards, news, dependencies, schedule, records, purposes, calls, create };
 }
 
 test('自动任务用途只接受成功人工回执，fork不继承父自动身份', () => {
@@ -91,7 +99,7 @@ test('跨会话与未认领管理被拒；冷投影缺失不猜为普通会话',
   const h = fixture(), { task } = await h.create();
   await assert.rejects(h.owner.manage({ action: 'delete', sessionId: 'knowledge', id: task.id }), { code: 'SCHEDULE_NOT_FOUND' });
   await assert.rejects(h.owner.manage({ action: 'history', sessionId: 'foreign', id: task.id, limit: 10 }), { code: 'AUTOMATION_IDENTITY' });
-  h.dependencies.projections = async () => ({ values: {} });
+  h.dependencies.projections = async () => ({ asOfSeq: 0, values: {} });
   await assert.rejects(h.owner.identity('auto'), { code: 'AUTOMATION_IDENTITY' });
   assert.equal(h.records.length, 1);
 });
@@ -140,7 +148,7 @@ test('知识模板固定流程，单例与旧工作台计划明确迁移；不�
 test('资讯创建只消费资讯owner指令，客户端不修改内置指令', async () => {
   const h = fixture();
   await assert.rejects(h.create('news'), { code: 'NEWS_UNAVAILABLE' });
-  h.dependencies.newsCreate = async (_id, submit) => submit({ title: '每日资讯', prompt: '可信资讯指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } });
+  h.news.withScheduleSpec = async (_id, submit) => submit({ title: '每日资讯', prompt: '可信资讯指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } });
   const { task } = await h.create('news'); assert.equal(task.prompt, '可信资讯指令');
   await assert.rejects(h.owner.manage({ action: 'update', expectedStatus: 'active', sessionId: 'news', id: task.id, expected: task, prompt: '任意新指令' }), { code: 'AUTOMATION_PROMPT' });
 });
@@ -148,7 +156,7 @@ test('资讯创建只消费资讯owner指令，客户端不修改内置指令', 
 test('资讯配置锁包住真实提交及回读；回读未知按原会话恢复不重复创建', async () => {
   const h = fixture(); let locked = false;
   const original = h.schedule.catalog.bind(h.schedule);
-  h.dependencies.newsCreate = async (_id, submit) => {
+  h.news.withScheduleSpec = async (_id, submit) => {
     locked = true;
     try { return await submit({ title: '资讯', prompt: '规范资讯', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } }); }
     finally { locked = false; }
@@ -168,7 +176,8 @@ test('自动任务严格契约覆盖六选一规则，拒绝多规则与任意�
   assert.throws(() => contract.input.parse({ action: 'catalog', body: true }));
   assert.throws(() => contract.input.parse({ ...base, purpose: 'other', spec: { ...base.spec, after_seconds: 60 } }));
   assert.ok(contract.input.parse({ action: 'create', sessionId: 'knowledge', purpose: 'knowledge', spec: { daily: { time: '00:15:00', time_zone: 'Asia/Shanghai' } } }));
-  assert.ok(contract.input.parse({ action: 'create', sessionId: 'news', purpose: 'news' }));
+  assert.ok(newsContract(z).scheduleInput.parse({ action: 'create', sessionId: 'news', purpose: 'news' }));
+  assert.throws(() => contract.input.parse({ action: 'create', sessionId: 'news', purpose: 'news' }));
   assert.throws(() => contract.input.parse({ ...base, purpose: 'news' }));
   assert.throws(() => contract.input.parse({ ...base, purpose: 'knowledge', spec: { ...base.spec, after_seconds: 60 } }));
 });
@@ -179,12 +188,13 @@ test('目标版原生Schedule真实持久化、CAS、自然到期回执、取消
   t.after(async () => { await ctx.fiber.dispose(); await fs.rm(directory, { recursive: true, force: true }); });
   new TypertRegistry(ctx);
   await ctx.plugin(Storage); await ctx.plugin(StorageJson, { root: directory }); await ctx.plugin(StorageDomain, { backend: 'json' });
-  ctx.provide('agents', { roots: () => [], withoutInitiator: fn => fn() });
+  // 夹具没有已挂载 Agent；新版 Schedule 会查询 get 来排除子代理。
+  ctx.provide('agents', { roots: () => [], get: () => undefined, withoutInitiator: fn => fn() });
   ctx.provide('sessions', { flush: async () => true });
   ctx.provide('tools', {}); ctx.provide('sessionPersistence', {});
   ctx.provide('sessionController', { resolveAgent: async sessionId => ({ agent: { session: { id: sessionId }, followup: message => messages.push(message) } }) });
   const native = new Schedule(ctx, {});
-  const owner = new Automation({ schedule: () => native, projections: async () => ({ values: { whalewingAutomation: 'custom' } }), confirmClaim: async () => {}, prepareModel: async () => {} });
+  const owner = new Automation({ schedule: () => native, projections: async () => ({ asOfSeq: 0, values: { whalewingAutomation: 'custom' } }), confirmClaim: async () => {}, prepareModel: async () => {} });
   const contract = automationContract(z);
   const call = async input => contract.result.parse(await owner.manage(contract.input.parse(input), AbortSignal.timeout(10000)));
   const { task } = await call({ action: 'create', purpose: 'custom', sessionId: 'native-auto', spec: { title: '真实原生计划', prompt: '隔离测试指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } } });
@@ -212,30 +222,30 @@ test('目标版原生Schedule真实持久化、CAS、自然到期回执、取消
 test('默认资讯初始化只用原session恢复未知接纳，成功后删除也不复活', async () => {
   const h = fixture(), values = new Map(), sessions = [];
   const state = { get: key => values.get(key), put: async (key, value) => values.set(key, value) };
-  h.dependencies.newsLifecycle = async () => state;
+  h.news.lifecycleTable = state;
   let unknown = true;
-  h.dependencies.createNewsSession = async id => { sessions.push(id); h.purposes.set(id, 'news'); if (unknown) { unknown = false; throw new Error('会话接受未知'); } };
-  h.dependencies.newsCreate = async (_, submit) => submit({ title: '每日资讯', prompt: '资讯指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } });
-  await assert.rejects(h.owner.initializeNews(), /会话接受未知/);
+  h.cards.createNewsSession = async id => { sessions.push(id); h.purposes.set(id, 'news'); if (unknown) { unknown = false; throw new Error('会话接受未知'); } };
+  h.news.withScheduleSpec = async (_, submit) => submit({ title: '每日资讯', prompt: '资讯指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } });
+  await assert.rejects(h.cards.initializeNews(), /会话接受未知/);
   const pending = state.get('default-news'); assert.ok(pending.sessionId); assert.deepEqual(Object.keys(pending), ['sessionId']);
-  const catalog = await h.owner.initializeNews(); assert.equal(catalog.tasks.length, 1); assert.equal(catalog.tasks[0].sessionId, pending.sessionId);
+  const catalog = await h.cards.initializeNews(); assert.equal(catalog.tasks.length, 1); assert.equal(catalog.tasks[0].sessionId, pending.sessionId);
   assert.equal(new Set(sessions).size, 1); assert.equal(h.calls.includes('model'), false);
   assert.deepEqual(state.get('default-news'), { accepted: true });
   h.records.length = 0;
-  await h.owner.initializeNews(); assert.equal(h.records.length, 0); assert.equal(sessions.length, 2);
+  await h.cards.initializeNews(); assert.equal(h.records.length, 0); assert.equal(sessions.length, 2);
 });
 
 test('初始化复用已暂停或已结束资讯计划，服务缺失不分配身份', async () => {
   for (const status of ['paused', 'inactive']) {
     const h = fixture(), values = new Map();
-    h.dependencies.newsLifecycle = async () => ({ get: key => values.get(key), put: async (key, value) => values.set(key, value) });
-    h.dependencies.createNewsSession = async () => assert.fail('不新建会话');
+    h.news.lifecycleTable = { get: key => values.get(key), put: async (key, value) => values.set(key, value) };
+    h.cards.createNewsSession = async () => assert.fail('不新建会话');
     h.records.push({ id: 'original', sessionId: 'news', status, prompt: '已有' });
-    await h.owner.initializeNews(); assert.deepEqual(values.get('default-news'), { accepted: true }); assert.equal(h.records[0].status, status);
+    await h.cards.initializeNews(); assert.deepEqual(values.get('default-news'), { accepted: true }); assert.equal(h.records[0].status, status);
   }
   const h = fixture(); h.dependencies.schedule = () => undefined;
-  h.dependencies.newsLifecycle = async () => assert.fail('服务缺失不打开持久域');
-  assert.equal((await h.owner.initializeNews()).available, false);
+  h.cards.newsOwner = async () => assert.fail('服务缺失不打开持久域');
+  assert.equal((await h.cards.initializeNews()).available, false);
 });
 
 test('暂停恢复消费原生CAS并保留同ID与历史，暂停任务可读可编辑', async () => {
@@ -263,14 +273,14 @@ test('暂停恢复消费原生CAS并保留同ID与历史，暂停任务可读可
 test('计划接受未知先查原身份，标记失败和并发恢复都不重复create', async () => {
   const h = fixture(), values = new Map(), originalCreate = h.schedule.create.bind(h.schedule);
   let markFails = true;
-  h.dependencies.newsLifecycle = async () => ({ get: key => values.get(key), put: async (key, value) => { if (value.accepted && markFails) { markFails = false; throw new Error('接纳标记失败'); } values.set(key, value); } });
-  h.dependencies.createNewsSession = async id => { h.purposes.set(id, 'news'); };
-  h.dependencies.newsCreate = async (_, submit) => submit({ title: '资讯', prompt: '资讯', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } });
+  h.news.lifecycleTable = ({ get: key => values.get(key), put: async (key, value) => { if (value.accepted && markFails) { markFails = false; throw new Error('接纳标记失败'); } values.set(key, value); } });
+  h.cards.createNewsSession = async id => { h.purposes.set(id, 'news'); };
+  h.news.withScheduleSpec = async (_, submit) => submit({ title: '资讯', prompt: '资讯', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } });
   h.schedule.create = async (...args) => { await originalCreate(...args); throw new Error('计划接受未知'); };
-  await assert.rejects(h.owner.initializeNews(), /计划接受未知/);
+  await assert.rejects(h.cards.initializeNews(), /计划接受未知/);
   const id = values.get('default-news').sessionId;
-  await assert.rejects(h.owner.initializeNews(), /接纳标记失败/);
-  const replies = await Promise.all([h.owner.initializeNews(), h.owner.initializeNews()]);
+  await assert.rejects(h.cards.initializeNews(), /接纳标记失败/);
+  const replies = await Promise.all([h.cards.initializeNews(), h.cards.initializeNews()]);
   assert.equal(h.calls.filter(c => c === 'create').length, 1); assert.equal(h.records[0].sessionId, id);
   assert.equal(replies[0].tasks.length, 1); assert.deepEqual(values.get('default-news'), { accepted: true });
 });
@@ -320,10 +330,10 @@ test('原生Schedule磁盘冷恢复保留范围与CAS原件，无插件任务镜
   async function open() {
     const ctx = new Context(); contexts.push(ctx); new TypertRegistry(ctx);
     await ctx.plugin(Storage); await ctx.plugin(StorageJson, { root: directory }); await ctx.plugin(StorageDomain, { backend: 'json' });
-    ctx.provide('agents', { roots: () => [], withoutInitiator: fn => fn() }); ctx.provide('sessions', { flush: async () => true });
+    ctx.provide('agents', { roots: () => [], get: () => undefined, withoutInitiator: fn => fn() }); ctx.provide('sessions', { flush: async () => true });
     ctx.provide('tools', {}); ctx.provide('sessionPersistence', {});
     const native = new Schedule(ctx, {});
-    const owner = new Automation({ schedule: () => native, projections: async () => ({ values: { whalewingAutomation: 'knowledge' } }), confirmClaim: async () => {}, prepareModel: async () => {}, listWorkspaces: async () => [{ workspaceId: 'a', path: '/a', sessionIds: ['source-a'] }] });
+    const owner = new Automation({ schedule: () => native, projections: async () => ({ asOfSeq: 0, values: { whalewingAutomation: 'knowledge' } }), confirmClaim: async () => {}, prepareModel: async () => {}, listWorkspaces: async () => [{ workspaceId: 'a', path: '/a', sessionIds: ['source-a'] }] });
     return { ctx, owner, native };
   }
   const first = await open();
@@ -337,4 +347,18 @@ test('原生Schedule磁盘冷恢复保留范围与CAS原件，无插件任务镜
   const result = await restored.owner.manage({ action: 'update', sessionId: 'scope-cold', id: created.task.id, expected: read.task, expectedStatus: 'active', workspaceScope: { mode: 'selected', workspaceIds: ['a'] } });
   assert.equal(result.updated, true);
   assert.deepEqual(automationPresentation(result.record.prompt).workspaceScope, { mode: 'selected', workspaceIds: ['a'] });
+});
+
+
+test('目录混有迁移中的旧候选时保留逐项诊断与正常任务', async () => {
+  const h = fixture();
+  h.records.push({ id: 'valid', sessionId: 'auto', prompt: '正常任务', status: 'active' }, { id: 'old', sessionId: 'legacy', prompt: legacySchedulePrefix, status: 'active' });
+  let legacyReads = 0;
+  h.dependencies.projections = async id => id === 'legacy' && ++legacyReads > 1
+    ? { kind: 'migration-required', asOfSeq: 0, values: { whalewingWorkbench: true } }
+    : { asOfSeq: 0, values: { whalewingAutomation: id === 'auto' ? 'custom' : null, whalewingWorkbench: true } };
+  const listing = await h.owner.catalog();
+  assert.equal(listing.tasks.length, 1); assert.equal(listing.tasks[0].id, 'valid');
+  assert.equal(listing.legacyTasks.length, 0); assert.equal(listing.issues.length, 1);
+  assert.equal(listing.issues[0].sessionId, 'legacy'); assert.match(listing.issues[0].message, /升级/);
 });

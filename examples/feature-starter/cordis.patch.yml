@@ -1,0 +1,4 @@
+# 由 scripts/build.mjs 从 package.json 生成。
+- insert:
+    - id: "whalewing-hello"
+      name: "dsh-whalewing-hello"

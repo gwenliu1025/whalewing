@@ -1,3 +1,4 @@
+import { allSkills, mountFeatures } from './feature-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
@@ -14,8 +15,8 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry';
 import { Vault, digest } from '../src/vault.js';
 import { SkillLibrary } from '../src/skills.js';
 import { SkillFiles } from '../src/skill-files.js';
-import { skillLibraryContract } from '../src/skill-library-contract.js';
-import { WhalewingSkillProvider } from '../tools.js';
+import { skillLibraryContract } from '../features/skills/contract.js';
+import { WhalewingSkillProvider } from '../src/skill-provider.js';
 import Whalewing from '../index.js';
 
 const text = (name, body = '读取输入，执行任务并检查结果。') => `---\nname: ${name}\ndescription: 任务需要时执行本方法并核对输入和结果\n---\n${body}\n`;
@@ -90,32 +91,29 @@ test('普通同名文件不接管，损坏正文可修复，链接与越界拒�
   await assert.rejects(library.manage({ action: 'create', id: 'linked/SKILL.md', content: text('linked'), expectedHash: '' }), { code: 'SYMLINK' });
 });
 
-test('正式Host两个Remote共用binding且无会话，技能失败不阻断知识初始化', async t => {
+test('正式Host两个Remote独立binding且无会话，技能失败不阻断知识初始化', async t => {
   const { root } = await setup(t), ctx = new Context(); new TypertRegistry(ctx);
   ctx.provide('commands', { register() {} }); ctx.provide('sessionQuery', {}); ctx.provide('sessionProjections', { register() {} });
   ctx.provide('sessions', { create() { assert.fail('不应新建会话'); } }); ctx.provide('skills', { snapshot: async () => ({ complete: true, skills: [] }) });
-  const previous = process.env.DSH_HOME; process.env.DSH_HOME = path.join(root, 'host-home');
-  let service;
-  try { service = new Whalewing(ctx, { vaultRoot: path.join(root, 'host-vault') }); }
-  finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; }
+  const { service, knowledge, skillsHost } = await mountFeatures(ctx, root, { vaultRoot: path.join(root, 'host-vault') }, false);
   t.after(() => ctx.fiber.dispose());
   const contract = skillLibraryContract(z);
-  assert.equal(contract.client.descriptors[0].namespace, service.typertRemote.namespace);
+  assert.equal(contract.client.descriptors[0].namespace, skillsHost.typertRemote.namespace);
   await fs.mkdir(path.dirname(service.skills.root), { recursive: true }); await fs.writeFile(service.skills.root, '占位阻断');
-  await assert.rejects(service.manageSkills({ action: 'list' }));
-  assert.equal((await service.manage({ action: 'status' })).initialized, true);
+  await assert.rejects(skillsHost.manageSkills({ action: 'list' }));
+  assert.equal((await knowledge.manage({ action: 'status' })).initialized, true);
   await fs.unlink(service.skills.root);
-  const saved = await service.manageSkills({ action: 'create', id: 'host/SKILL.md', content: text('host'), expectedHash: '' });
+  const saved = await skillsHost.manageSkills({ action: 'create', id: 'host/SKILL.md', content: text('host'), expectedHash: '' });
   contract.result.parse(saved); assert.equal(saved.entry.name, 'host');
-  contract.result.parse(await service.manageSkills({ action: 'list' }));
-  await assert.rejects(service.manageSkills({ action: 'create', id: 'bad.md', content: text('bad'), expectedHash: '', caller: { kind: 'human' } }));
+  contract.result.parse(await skillsHost.manageSkills({ action: 'list' }));
+  await assert.rejects(skillsHost.manageSkills({ action: 'create', id: 'bad.md', content: text('bad'), expectedHash: '', caller: { kind: 'human' } }));
 });
 
 test('真实双provider发现普通用户技能，来源失效演进项不会被用户根扫描重新暴露', async t => {
   const { root, vault, library } = await setup(t); await vault.initialize();
   const ctx = new Context(), registry = new SkillRegistry(ctx); const providers = [];
   registry.registerProvider(control => { const value = new FileSystemSkillProvider(ctx, control, { dshHome: path.join(root, 'dsh'), agentsHome: path.join(root, 'agents'), watch: false }); providers.push(value); return value; });
-  registry.registerProvider(control => { const value = new WhalewingSkillProvider(ctx, control, library); providers.push(value); return value; });
+  registry.registerProvider(control => { const value = new WhalewingSkillProvider(ctx, control, library, allSkills); providers.push(value); return value; });
   t.after(async () => { for (const provider of providers) await provider.dispose(); await ctx.fiber.dispose(); });
   await library.manage({ action: 'create', id: 'user.md', content: text('user'), expectedHash: '' });
   const source = await vault.write('40-知识/来源.md', note, '');
@@ -250,18 +248,14 @@ test('Web形态仅preset扫描用户根，官方管理投影标记已入库而�
   const registry = new SkillRegistry(ctx);
   await ctx.plugin(LocalFileSystem, { cwd: root, diffBasisMaxBytes: 1024 * 1024 });
   ctx.provide('commands', { register() {} }); ctx.provide('sessionQuery', {}); ctx.provide('sessionProjections', { register() {} }); ctx.provide('sessions', {});
-  const previous = process.env.DSH_HOME; process.env.DSH_HOME = path.join(root, 'scoped-home');
-  let service;
-  try { service = new Whalewing(ctx, { vaultRoot: path.join(root, 'scoped-vault') }); }
-  finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; }
+  const { service, skillsHost } = await mountFeatures(ctx, root, { vaultRoot: path.join(root, 'scoped-vault') }, false);
   const providers = [];
-  registry.registerProvider(control => { const p = new WhalewingSkillProvider(ctx, control, service.skills); providers.push(p); return p; });
   const standardKey = {}, isolatedKey = {}, standard = createScope(ctx, standardKey), isolated = createScope(ctx, isolatedKey);
   standard.ctx.skills.registerProvider(control => { const p = new FileSystemSkillProvider(standard.ctx, control, { dshHome: path.dirname(service.skills.root), agentsHome: path.join(root, 'agents'), watch: false }); providers.push(p); return p; });
   t.after(async () => { for (const p of providers) await p.dispose(); await standard.dispose(); await isolated.dispose(); await ctx.fiber.dispose(); });
-  await service.manageSkills({ action: 'create', id: 'scoped-only/SKILL.md', content: text('scoped-only'), expectedHash: '' });
+  await skillsHost.manageSkills({ action: 'create', id: 'scoped-only/SKILL.md', content: text('scoped-only'), expectedHash: '' });
   assert.equal(await registry.get('scoped-only'), undefined);
-  const listed = await service.manageSkills({ action: 'list' });
+  const listed = await skillsHost.manageSkills({ action: 'list' });
   assert.equal(listed.entries.find(entry => entry.name === 'scoped-only').discovery, 'catalogued', JSON.stringify({ projection: await service.projectSkills(), root: service.skills.root }));
   assert.ok((await service.skillCandidates()).skills.some(skill => skill.name === 'scoped-only'));
   assert.match((await registry.get('scoped-only', { scope: standardKey })).content, /执行任务/);

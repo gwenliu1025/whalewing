@@ -1,3 +1,4 @@
+import { allSkills } from './feature-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
@@ -8,7 +9,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { SkillRegistry } from '@deepseek-ai/dsh-skill';
 import { Vault } from '../src/vault.js';
 import { SkillLibrary } from '../src/skills.js';
-import { WhalewingSkillProvider } from '../tools.js';
+import { WhalewingSkillProvider } from '../src/skill-provider.js';
 import { roles } from '../content/roles.js';
 
 const bundledRoot = fileURLToPath(new URL('../content/skills/', import.meta.url));
@@ -27,7 +28,7 @@ async function isolated(t) {
   const skillRoot = path.join(root, 'dsh', 'skills');
   const library = new SkillLibrary(vault, skillRoot);
   registry.registerProvider(control => {
-    const provider = new WhalewingSkillProvider(ctx, control, library);
+    const provider = new WhalewingSkillProvider(ctx, control, library, allSkills);
     providers.push(provider);
     return provider;
   });
@@ -37,11 +38,12 @@ async function isolated(t) {
 test('七角色默认技能由目标宿主实际发现并加载，外部方法不增加平行技能入口', async t => {
   const { library, registry } = await isolated(t);
   const expected = (await fs.readdir(bundledRoot, { withFileTypes: true })).filter(item => item.isDirectory()).map(item => item.name).sort();
-  assert.deepEqual(expected, ['whalewing-check', 'whalewing-knowledge', 'whalewing-news', 'whalewing-skill-evolution']);
+  assert.deepEqual(expected, ['whalewing-check', 'whalewing-clarify', 'whalewing-coding', 'whalewing-debugging', 'whalewing-frontend-design', 'whalewing-knowledge', 'whalewing-news', 'whalewing-plugin-management', 'whalewing-skill-evolution', 'whalewing-web-testing', 'whalewing-writing']);
   for (const name of ['doc-coauthoring', 'internal-comms', 'frontend-design']) assert.ok(!expected.includes(name));
   assert.deepEqual((await registry.list()).map(item => item.name).sort(), expected);
   for (const role of roles) {
-    for (const name of role.skills) {
+    // office 等宿主自带技能由 DSH 提供，这里只核对随包技能。
+    for (const name of role.skills.filter(name => name.startsWith('whalewing-'))) {
       const loaded = await registry.get(name);
       const source = await fs.readFile(path.join(bundledRoot, name, 'SKILL.md'), 'utf8');
       assert.ok(loaded, `${role.id}: ${name}`);

@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { acceptWorldSnapshot, curateWorldSnapshot, fetchWorldSnapshot, ModelWorld, worldLimits } from '../src/model-world.js';
+import { acceptWorldSnapshot, curateWorldSnapshot, fetchWorldSnapshot, ModelWorld, worldLimits } from '../features/model-world/model-world.js';
 import { rateWorldModels } from '../src/model-world-rating.js';
 import { worldIndex, worldValuePlans, worldTierFor, matchWorldIndex, worldNameKey } from '../src/model-world-index.js';
 import { parseAaName, groupAaModels } from '../scripts/update-model-index.mjs';
-import { modelWorldContract } from '../src/model-world-contract.js';
+import { modelWorldContract } from '../features/model-world/contract.js';
 
 const at = '2026-10-11T13:44:58.831Z';
 function fixture() {

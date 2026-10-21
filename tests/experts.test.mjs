@@ -1,3 +1,4 @@
+import { mountFeatures } from './feature-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
@@ -7,13 +8,15 @@ import SessionProjections from '@deepseek-ai/dsh-session-projection';
 import CommandRuntime from '@deepseek-ai/dsh-commands';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools';
-import AgentRegistry, { installModelSelection } from '@deepseek-ai/dsh-agent';
-import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
-import { readFileSync } from 'node:fs';
-import { readRuntime, transformFiles } from '../host-adapter/adapter.mjs';
+import AgentRegistry from '@deepseek-ai/dsh-agent';
 import AgentLoop from '@deepseek-ai/dsh-agent-loop';
-import SessionPersistenceJsonl from '@deepseek-ai/dsh-session-persistence-jsonl';
+import * as JsonlModule from '@deepseek-ai/dsh-session-persistence-jsonl';
 import SessionQuery from '@deepseek-ai/dsh-session-query';
+import Controller from '@deepseek-ai/dsh-api-session-controller';
+import Workspace from '@deepseek-ai/dsh-workspace';
+import Loader from '@deepseek-ai/cordis-plugin-loader';
+import Presets from '@deepseek-ai/dsh-agent-preset-registry';
+import DefaultModel from '@deepseek-ai/dsh-agent-default-model';
 import { resolveChildAgentOptions } from '@deepseek-ai/dsh-subagent';
 import Storage from '@deepseek-ai/dsh-storage';
 import * as StorageJson from '@deepseek-ai/dsh-storage-json';
@@ -22,31 +25,21 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import * as Experts from '../experts.js';
-import { expertContract } from '../src/expert-contract.js';
-import { ExpertStore, expertDomain } from '../src/expert-store.js';
+import * as Experts from '../features/experts/host.js';
+import { expertContract } from '../features/experts/contract.js';
+import { ExpertStore, expertDomain } from '../features/experts/store.js';
 import { roles } from '../content/roles.js';
 import { z } from 'zod';
 import Whalewing from '../index.js';
-import { automationProjection } from '../src/automation.js';
+import AiWeb from '../features/ai-web/host.js';
+import Cards from '../features/cards/host.js';
+import ModelWorld from '../features/model-world/host.js';
+import * as Toolbox from '../features/toolbox/host.js';
+import { automationProjection } from '../src/identity.js';
 
-// 按当前适配基线编译原 owner 方法，避免把选模/投影时序重写成另一套测试逻辑。
-const runtime = new URL('../../../.artifacts/youjin-first-version/runtime/', import.meta.url);
-const originalController = readFileSync(new URL('node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js', runtime), 'utf8');
-const adaptedController = transformFiles(await readRuntime(runtime)).files.get('node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js').toString();
-function nativeMethod(source, name) {
-  const start = source.indexOf('\t' + name + '(');
-  assert.ok(start >= 0);
-  return source.slice(start, source.indexOf('\n\t/**', start));
-}
-const NativeSelections = new Function('installModelSelection', 'agentModelSelection', 'return class { ' + ['selectionFor', 'selectForNextRequest', 'serializeImageAdmission'].map(name => nativeMethod(originalController, name)).join('\n') + ' }')(installModelSelection, value => ({ ...value }));
-const compileCommands = source => new Function('ReasoningEffortId', 'RemoteError', 'remoteErrorOf', 'return class { ' + nativeMethod(source, 'async selectModel') + ' }')(value => value, RemoteError, error => error instanceof RemoteError ? error : undefined);
-const NativeCommands = compileCommands(adaptedController);
-// 未适配的原版 selectModel 总会顺带保存全局默认模型。
-const OriginalCommands = compileCommands(originalController);
-const nativeProjection = new Function('z$1', originalController.slice(originalController.indexOf('const modelSelectionSchema'), originalController.indexOf('function installModelSelectionProjection')) + '\nreturn modelSelectionProjection;')(z);
+const SessionPersistenceJsonl = JsonlModule.default ?? JsonlModule;
 
-// 仅模型响应是内存桩；命令、日志、投影、loop 和 adapter 前投影均走目标安装版。
+// 模型输出与外围技能内容为内存载体；Controller、命令、日志、投影及loop使用当前真实包。
 class Adapter extends LlmAdapter {
   requests = [];
   async resolveModel(provider, model) { return { provider, id: model, name: model }; }
@@ -59,29 +52,39 @@ class Adapter extends LlmAdapter {
   }
 }
 
-async function harness(t, persistence = true, expertConfig = {}, host = 'adapted') {
+async function harness(t, persistence = true, expertConfig = {}) {
   const ctx = new Context();
   const directory = await mkdtemp(path.join(os.tmpdir(), 'whalewing-experts-'));
-  t.after(async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    await ctx.fiber.dispose();
+    // 只回收本测试在系统临时目录创建的资源，不穿越外部联接。
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(directory).startsWith('whalewing-experts-'));
+    await rm(directory, { recursive: true, force: true });
+  });
   new TypertRegistry(ctx);
   await ctx.plugin(Storage);
   await ctx.plugin(StorageJson, { root: directory });
   await ctx.plugin(StorageDomain, { backend: 'json' });
   ctx.provide('skills', { async list() { return []; }, async get(name) { return { name, description: '测试基础技能', content: '测试正文' }; } });
-  ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }), saveSelection() { throw new Error('禁止写全局默认'); } });
-  const controller = { async modelCatalog() { return { default: ctx.agentDefaultModel.currentSelection(), groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-flash', name: 'DeepSeek v4.1 flash' }] }], failures: [] }; } };
-  ctx.provide('sessionController', controller);
+  await ctx.plugin(DefaultModel, { provider: 'fixture', model: 'fixture' });
+  ctx.agentDefaultModel.saveSelection = () => { throw new Error('禁止写全局默认'); };
   for (const plugin of [LlmRuntime, SessionStore, SessionProjections, CommandRuntime]) await ctx.plugin(plugin);
   await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false });
   for (const plugin of [ToolRuntime, AgentRegistry]) await ctx.plugin(plugin);
   await ctx.plugin(AgentLoop, { agents: [] });
-  ctx.sessionProjections.register(nativeProjection);
-  const selections = new NativeSelections();
-  Object.assign(selections, { ctx, selections: new WeakMap(), imageAdmissionChains: new WeakMap() });
-  const commands = host === 'adapted' ? new NativeCommands() : new OriginalCommands();
-  Object.assign(commands, { ctx, agents: selections, resolveAgent: async id => ctx.agents.get(id), requireModel: async request => { if (!request.provider || !request.model) throw new Error('模型不可用'); } });
-  controller.commands = commands;
-  controller.selectModel = request => commands.selectModel(request);
+  if (persistence) await ctx.plugin(SessionPersistenceJsonl, { root: path.join(directory, 'sessions'), compression: 'none' });
+  await ctx.plugin(SessionQuery);
+  if (persistence) await ctx.plugin(Workspace);
+  // 缺持久化的反例没有工作区；只供Controller装配，不进入创建、恢复或成员判断。
+  else ctx.provide('workspaceRegistry', { list: () => [] });
+  ctx.provide('attachments', { imageLimits: { maxImageBytes: 1024, maxImagesPerMessage: 1, maxMessageImageBytes: 1024, maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'] } });
+  ctx.provide('fileUploads', { registerAgentResolver() { return () => {}; } });
+  ctx.provide('fs', {}); ctx.provide('remoteAccess', { allows: () => true });
+  await ctx.plugin(Loader, { baseUrl: import.meta.url });
+  await ctx.plugin(Presets, { default: 'standard' });
+  await ctx.agentPresets.register({ id: 'standard', plugins: [] });
+  await ctx.plugin(Controller, { nativeOpen: false });
   const adapter = new Adapter();
   ctx.llm.registerAdapter(['fixture'], adapter);
   const saved = new Map();
@@ -90,13 +93,20 @@ async function harness(t, persistence = true, expertConfig = {}, host = 'adapted
     if (failFlush) throw new Error('fixture persistence failure');
     saved.set(session.id, session.snapshotEvents());
   });
-  const expertPlugin = ctx.plugin(Experts, expertConfig);
-  await expertPlugin;
-  const create = async (id, extra = {}) => (await ctx.agents.create({ sessionId: id, agentOptions: { provider: 'fixture', model: 'fixture' }, setup: (_ctx, agent) => { if (!extra.parentAgent && extra.meta?.origin !== 'subagent') selections.selectionFor(agent); }, ...extra })).agent;
+  const mounted = await mountFeatures(ctx, directory, { experts: expertConfig }, false);
+  const expertPlugin = mounted.service.registry.bases.get('experts').fiber;
+  await expertPlugin.await();
+  // 普通身份由真实Controller安装模型投影与选择器；子任务和种子使用原生Agent入口。
+  const create = async (id, extra = {}) => {
+    if (!persistence || extra.parentAgent || extra.seed) return (await ctx.agents.create({ sessionId: id, meta: { agentPreset: 'standard' }, agentOptions: { provider: 'fixture', model: 'fixture' }, ...extra })).agent;
+    const receipt = await ctx.sessionController.create({ sessionId: id, cwd: directory, agentPreset: 'standard' });
+    assert.equal(receipt.sessionId, id);
+    return (await ctx.sessionController.resolveAgent(id)).agent;
+  };
   const agent = await create('parent');
   const run = (input, subject = agent) => ctx.commands.execute(subject, `/whalewing-expert ${typeof input === 'string' ? input : JSON.stringify(input)}`, [], new AbortController().signal);
   const state = (subject = agent) => ctx.sessionProjections.stateOf(subject.session, 'whalewingExpert');
-  return { ctx, agent, adapter, create, run, state, saved, expertPlugin, directory, selections, commands, failFlush: () => { failFlush = true; } };
+  return { coreFiber: mounted.fiber, ctx, agent, adapter, create, run, state, saved, expertPlugin, directory, failFlush: () => { failFlush = true; } };
 }
 
 async function turn(ctx, agent) {
@@ -235,7 +245,7 @@ test('命令结算等待可取消，插件卸载清理命令、投影与等待�
 const fieldsOf = ({ id: _id, revision: _revision, builtin: _builtin, ...fields }) => fields;
 const draft = () => ({ name: '审计专家', description: '检查已有业务资料与来源', avatar: null, prompt: '只核对有据可查的审计资料，明确出处和缺口。', model: null, skills: [], mcpServers: [] });
 
-test('七位专家默认只绑定三项基础技能，重置回到角色绑定，读回隔离可变数组且保留员工编辑', async t => {
+test('七位专家默认绑定三项基础技能和各自的通用专业技能，重置回到角色绑定，读回隔离可变数组且保留员工编辑', async t => {
   const h = await harness(t);
   const source = structuredClone(roles);
   const edited = new Map();
@@ -243,7 +253,8 @@ test('七位专家默认只绑定三项基础技能，重置回到角色绑定�
   for (const role of roles) {
     const initial = h.ctx.whalewingExperts.get(role.id);
     assert.deepEqual(initial.skills, role.skills);
-    assert.deepEqual(initial.skills, ['whalewing-knowledge', 'whalewing-skill-evolution', 'whalewing-check']);
+    assert.deepEqual(initial.skills.slice(0, 3), ['whalewing-knowledge', 'whalewing-skill-evolution', 'whalewing-check']);
+    assert.ok(initial.skills.length > 3);
     assert.notEqual(initial.skills, role.skills);
     initial.skills.push('仅本次读回');
     h.ctx.whalewingExperts.list().experts.find(expert => expert.id === role.id).skills.length = 0;
@@ -268,7 +279,7 @@ test('七位专家默认只绑定三项基础技能，重置回到角色绑定�
 
 test('无会话专家候选允许配置本地技能，真实session目录及回合仍只认scoped运行时', async t => {
   const h = await harness(t); let candidateReads = 0;
-  h.ctx.provide('whalewing', { async skillCandidates() { candidateReads++; return { skills: [{ name: 'local-configurable', description: '已入库但是否可用由真实模式决定' }], issues: [] }; } });
+  h.ctx.whalewing.skillCandidates = async () => { candidateReads++; return { skills: [{ name: 'local-configurable', description: '已入库但是否可用由真实模式决定' }], issues: [] }; };
   h.ctx.skills.list = async () => Object.freeze([]);
   const catalog = await h.ctx.whalewingExperts.manage({ action: 'catalog' });
   assert.deepEqual(catalog.skills.map(skill => skill.name), ['local-configurable']);
@@ -372,8 +383,8 @@ test('内置迁移持久失败阻止启动就绪，重试不重复递增已恢�
   const initial = h.ctx.whalewingExperts.list().experts.slice(0, 2);
   for (const expert of initial) await h.ctx.whalewingExperts.store.table.put(expert.id, { ...expert, revision: 5, deleted: true });
   await h.expertPlugin.dispose();
-  const domain = await h.ctx.storageDomain.open(expertDomain);
-  const table = domain.table('experts');
+  let domain = await h.ctx.storageDomain.open(expertDomain);
+  let table = domain.table('experts');
   const update = table.update;
   table.update = async (...args) => {
     if (args[0] === initial[1].id) throw new Error('fixture migration persistence failure');
@@ -382,9 +393,12 @@ test('内置迁移持久失败阻止启动就绪，重试不重复递增已恢�
   const open = h.ctx.storageDomain.open;
   h.ctx.storageDomain.open = async () => domain;
   try {
-    await assert.rejects(Experts.apply(h.ctx, { maxExperts: 200, operationMs: 15000 }), /migration persistence failure/);
+    const failed = h.ctx.plugin(Experts, { maxExperts: 200, operationMs: 15000 });
+    await assert.rejects(failed.await(), /migration persistence failure/);
+    await failed.dispose();
     assert.equal(h.ctx.get('whalewingExperts'), undefined);
   } finally { h.ctx.storageDomain.open = open; table.update = update; }
+  domain = await h.ctx.storageDomain.open(expertDomain); table = domain.table('experts');
   assert.equal(table.get(initial[0].id).revision, 6);
   assert.equal(table.get(initial[0].id).deleted, false);
   assert.equal(table.get(initial[1].id).revision, 5);
@@ -595,14 +609,12 @@ test('新增专家容量预留为原子操作，持久化失败不占身份或�
   assert.equal(api.list().experts.length, 8);
 });
 
-test('真实 TypertRegistry 同时挂载知识与专家，两种激活顺序独立注册和卸载', async t => {
+test('真实 TypertRegistry 核心内部知识与专家分别注册，子插件卸载不注销其它命名空间', async t => {
   const h = await harness(t);
-  h.ctx.provide('sessionQuery', {});
-  const knowledge = h.ctx.plugin(Whalewing, { vaultRoot: path.join(h.directory, 'vault') });
-  await knowledge;
+  const knowledge = h.ctx.whalewing.registry.bases.get('knowledge').fiber;
   assert.ok(h.ctx.typert.getPackage('dsh-whalewing'));
   assert.ok(h.ctx.typert.getPackage('dsh-whalewing/experts'));
-  assert.equal((await h.ctx.whalewing.manage({ action: 'status' }, new AbortController().signal)).initialized, true);
+  assert.equal((await h.ctx.whalewingKnowledge.manage({ action: 'status' }, new AbortController().signal)).initialized, true);
   assert.equal((await h.ctx.whalewingExperts.manage({ action: 'list' })).experts.length, 7);
   await h.expertPlugin.dispose();
   assert.equal(h.ctx.typert.getPackage('dsh-whalewing/experts'), undefined);
@@ -610,12 +622,15 @@ test('真实 TypertRegistry 同时挂载知识与专家，两种激活顺序独�
   await h.ctx.plugin(Experts);
   assert.equal((await h.ctx.whalewingExperts.manage({ action: 'list' })).experts.length, 7);
   await knowledge.dispose();
-  assert.equal(h.ctx.typert.getPackage('dsh-whalewing'), undefined);
+  assert.equal(h.ctx.typert.getPackage('dsh-whalewing/knowledge'), undefined);
   assert.ok(h.ctx.typert.getPackage('dsh-whalewing/experts'));
+  assert.ok(h.ctx.typert.getPackage('dsh-whalewing'));
+  await h.coreFiber.dispose();
+  assert.equal(h.ctx.typert.getPackage('dsh-whalewing'), undefined);
 });
 
 
-test('两种注册顺序均在原模型快照前选模，旧会话跟随默认且规范化推理级别幂等', { timeout: 15000 }, async t => {
+test('两种注册顺序均保留原生模型快照，专家不写选择事件或全局默认', { timeout: 15000 }, async t => {
   for (const ownerFirst of [false, true]) {
     const h = await harness(t);
     if (ownerFirst) { await h.expertPlugin.dispose(); await h.ctx.plugin(Experts); }
@@ -628,19 +643,19 @@ test('两种注册顺序均在原模型快照前选模，旧会话跟随默认�
     model = 'second';
     await turn(h.ctx, h.agent);
     const config = h.agent.session.requestHeader().config;
-    assert.equal(config.model, 'second');
+    assert.equal(config.model, 'first');
     assert.equal(config.reasoningEffort, 'medium');
     const assembly = await h.ctx.systemPrompt.assemble({ agent: h.agent, scope: h.agent });
-    assert.equal(assembly.variables.model, 'second');
+    assert.equal(assembly.variables.model, 'first');
     const selections = () => h.agent.session.snapshotEvents().filter(event => event.type === 'model/selection');
-    assert.equal(selections().length, 2);
+    assert.equal(selections().length, 0);
     await turn(h.ctx, h.agent);
-    assert.equal(selections().length, 2);
+    assert.equal(selections().length, 0);
     assert.equal(h.adapter.requests.length, 3);
   }
 });
 
-test('显式专家配置在manager和普通入口均优先，非插件会话不被重新选模', { timeout: 15000 }, async t => {
+test('原版保留会话实际模型，manager和普通专家的专属配置不取得选模权', { timeout: 15000 }, async t => {
   const h = await harness(t);
   await turn(h.ctx, h.agent);
   h.ctx.agentDefaultModel.currentSelection = () => ({ provider: 'fixture', model: 'new-default' });
@@ -653,9 +668,10 @@ test('显式专家配置在manager和普通入口均优先，非插件会话不�
     const expert = (await api.store.save({ id, expectedRevision: old.revision, expert: { ...fieldsOf(old), model: { provider: 'fixture', model: 'dedicated-' + id } } })).expert;
     await h.run({ expertId: id });
     const prepared = await api.manage({ action: 'prepare_model', sessionId: h.agent.id, expertId: id, expectedRevision: expert.revision });
-    assert.equal(prepared.selected.model, 'dedicated-' + id);
+    assert.equal(prepared.selected.model, 'fixture');
+    assert.equal(prepared.applied, false);
     await turn(h.ctx, h.agent);
-    assert.equal(h.agent.session.requestHeader().config.model, 'dedicated-' + id);
+    assert.equal(h.agent.session.requestHeader().config.model, 'fixture');
   }
 });
 
@@ -670,7 +686,20 @@ test('模型准备的身份断言不授予选择权，缺默认和失效路由�
   h.ctx.agentDefaultModel.currentSelection = () => ({ provider: '', model: '' });
   await assert.rejects(api.manage(input), { code: 'MODEL_UNAVAILABLE' });
   h.ctx.agentDefaultModel.currentSelection = () => ({ provider: 'not-configured', model: 'missing' });
-  await assert.rejects(api.manage(input), /not-configured|adapter|provider/i);
+  assert.deepEqual((await api.manage(input)).selected, { provider: 'not-configured', model: 'missing' });
+  // 只检查本次回合的持久失败事件，普通配置中的provider字段不构成错误证据。
+  const before = h.agent.session.snapshotEvents().length;
+  await turn(h.ctx, h.agent);
+  assert.equal(await h.ctx.sessions.flush(h.agent.session), true);
+  const { events } = await h.ctx.sessionQuery.readSession(h.agent.id);
+  const starts = events.slice(before).filter(event => event.type === 'turn/start');
+  const ends = events.slice(before).filter(event => event.type === 'turn/end');
+  assert.equal(starts.length, 1); assert.equal(ends.length, 1);
+  assert.equal(ends[0].data.turn, starts[0].data.turn);
+  assert.deepEqual(ends[0].data.reason, {
+    kind: 'error',
+    error: { code: 'NO_ADAPTER', message: 'no adapter registered for provider "not-configured"' },
+  });
   assert.equal(h.adapter.requests.length, 0);
   assert.equal(h.agent.session.snapshotEvents().some(event => event.type === 'model/selection'), false);
 });
@@ -690,59 +719,45 @@ test('原生子代理继承父真实请求型号且保留子任务显式覆盖�
   }
 });
 
-test('取消或卸载在等待选模时阻止后续组装，迟到选择保留原会话但不发送', { timeout: 15000 }, async t => {
+test('原版模型准备在取消或卸载后拒收，不发送请求也不改模型', { timeout: 15000 }, async t => {
   for (const unload of [false, true]) {
     const h = await harness(t);
     await h.run({ expertId: 'manager' });
-    const started = Promise.withResolvers(), release = Promise.withResolvers();
-    const original = h.ctx.sessionController.selectModel;
-    h.ctx.sessionController.selectModel = async input => { started.resolve(); await release.promise; return original(input); };
-    const control = new AbortController();
-    const assembling = h.ctx.systemPrompt.assemble({ agent: h.agent, scope: h.agent, signal: control.signal });
-    const rejected = assert.rejects(assembling);
-    await started.promise;
+    const api = h.ctx.whalewingExperts, control = new AbortController();
     if (unload) await h.expertPlugin.dispose(); else control.abort(new Error('取消准备'));
-    await rejected;
-    release.resolve();
-    await new Promise(setImmediate);
+    await assert.rejects(api.prepareModel({ sessionId: h.agent.id, expertId: 'manager', expectedRevision: 0 }, control.signal));
     assert.equal(h.adapter.requests.length, 0);
     assert.equal(h.agent.session.requestHeader(), undefined);
-    assert.equal(h.ctx.sessionProjections.stateOf(h.agent.session, 'modelSelection').pending.model, 'fixture');
+    assert.equal(h.agent.session.snapshotEvents().some(event => event.type === 'model/selection'), false);
   }
 });
 
-test('真实JSONL冷恢复后按当次系统默认准备，不沿用旧request header', { timeout: 15000 }, async t => {
+test('真实JSONL冷恢复保留原生已用模型，不由专家覆盖为新默认', { timeout: 15000 }, async t => {
   const h = await harness(t);
-  await h.ctx.plugin(SessionPersistenceJsonl, { root: path.join(h.directory, 'sessions') });
-  const create = await h.ctx.agents.create({ sessionId: 'cold-model', agentOptions: { provider: 'fixture', model: 'initial' }, setup: (_ctx, agent) => { h.selections.selectionFor(agent); } });
-  await h.run({ expertId: 'manager' }, create.agent);
-  await turn(h.ctx, create.agent);
-  assert.equal(create.agent.session.requestHeader().config.model, 'fixture');
-  await create.dispose();
+  const created = await h.ctx.agents.create({ sessionId: 'cold-model', meta: { cwd: h.directory, agentPreset: 'standard' }, agentOptions: { provider: 'fixture', model: 'initial' } });
+  await h.run({ expertId: 'manager' }, created.agent);
+  await turn(h.ctx, created.agent);
+  assert.equal(created.agent.session.requestHeader().config.model, 'initial');
+  assert.equal(await h.ctx.sessions.flush(created.agent.session), true);
+  await created.dispose();
   h.ctx.agentDefaultModel.currentSelection = () => ({ provider: 'fixture', model: 'after-restart' });
-  const restored = await h.ctx.agents.resume({ resumeSessionId: 'cold-model', agentOptions: { provider: 'fixture', model: 'stale-option' }, setup: (_ctx, agent) => { h.selections.selectionFor(agent); } });
-  t.after(() => restored.dispose());
-  await turn(h.ctx, restored.agent);
-  assert.equal(restored.agent.session.requestHeader().config.model, 'after-restart');
+  const { agent } = await h.ctx.sessionController.resolveAgent('cold-model');
+  assert.equal(h.state(agent).view.expertId, 'manager');
+  await turn(h.ctx, agent);
+  assert.equal(agent.session.requestHeader().config.model, 'initial');
+  assert.equal(agent.session.snapshotEvents().some(event => event.type === 'model/selection'), false);
 });
 
-
-test('准备期间专家版本变化或会话身份退出阻止提交，不接管新身份', { timeout: 15000 }, async t => {
+test('原版模型准备拒收过期专家版本和退出的会话身份，不接管新身份', { timeout: 15000 }, async t => {
   for (const changeRole of [false, true]) {
     const h = await harness(t);
     await h.run({ expertId: 'manager' });
-    const started = Promise.withResolvers(), release = Promise.withResolvers();
-    const resolve = h.ctx.llm.resolveCallConfig.bind(h.ctx.llm);
-    h.ctx.llm.resolveCallConfig = async (...args) => { started.resolve(); await release.promise; return resolve(...args); };
-    const preparing = h.ctx.whalewingExperts.manage({ action: 'prepare_model', sessionId: h.agent.id, expertId: 'manager', expectedRevision: 0 });
-    const rejected = assert.rejects(preparing, { code: 'EXPERT_CHANGED' });
-    await started.promise;
     if (changeRole) {
       const role = h.ctx.whalewingExperts.get('manager');
       await h.ctx.whalewingExperts.store.save({ id: role.id, expectedRevision: role.revision, expert: { ...fieldsOf(role), description: '员工正在更新角色' } });
     } else await h.run({ expertId: null });
-    release.resolve();
-    await rejected;
+    await assert.rejects(h.ctx.whalewingExperts.manage({ action: 'prepare_model', sessionId: h.agent.id, expertId: 'manager', expectedRevision: 0 }), { code: 'EXPERT_CHANGED' });
+    assert.equal(h.adapter.requests.length, 0);
     assert.equal(h.agent.session.snapshotEvents().some(event => event.type === 'model/selection'), false);
   }
 });
@@ -760,33 +775,30 @@ test('凭据失败保留所选路由和原错误，不静默重试其它型号',
   assert.deepEqual(h.ctx.agentDefaultModel.currentSelection(), { provider: 'fixture', model: 'employee-model' });
 });
 
-test('自动会话每次实际请求采用系统默认，manager专用型号不影响任务且未认领拒绝准备', { timeout: 15000 }, async t => {
+test('自动会话保留原生模型快照，manager专用型号不影响任务且未认领拒绝准备', { timeout: 15000 }, async t => {
   const h = await harness(t);
   await assert.rejects(h.ctx.whalewingExperts.prepareModel({ sessionId: h.agent.id, automation: true }), { code: 'AUTOMATION_IDENTITY' });
-  h.ctx.sessionProjections.register(automationProjection);
-  h.ctx.commands.register({ name: 'whalewing', description: '测试人工用途回执', handler: async () => ({ kind: 'success', text: JSON.stringify({ action: 'automation_claim', purpose: 'knowledge' }) }) });
   const manager = h.ctx.whalewingExperts.get('manager');
   await h.ctx.whalewingExperts.store.save({ id: 'manager', expectedRevision: manager.revision, expert: { ...fieldsOf(manager), model: { provider: 'fixture', model: 'manager-only' } } });
   await h.run({ expertId: 'manager' });
-  await h.ctx.commands.execute(h.agent, '/whalewing', [], new AbortController().signal);
+  await h.ctx.commands.execute(h.agent, '/whalewing {"action":"automation_claim","purpose":"knowledge"}', [], new AbortController().signal);
   for (const model of ['employee-gpt', 'employee-claude']) {
     h.ctx.agentDefaultModel.currentSelection = () => ({ provider: 'fixture', model });
     await turn(h.ctx, h.agent);
-    assert.equal(h.agent.session.requestHeader().config.model, model);
+    assert.equal(h.agent.session.requestHeader().config.model, 'employee-gpt');
   }
   assert.equal(h.adapter.requests.length, 2);
   h.ctx.agentDefaultModel.currentSelection = () => ({ provider: '', model: '' });
-  await assert.rejects(h.ctx.whalewingExperts.prepareModel({ sessionId: h.agent.id, automation: true }), { code: 'MODEL_UNAVAILABLE' });
+  assert.equal((await h.ctx.whalewingExperts.prepareModel({ sessionId: h.agent.id, automation: true })).selected.model, 'employee-gpt');
+  const fresh = await h.create('empty-default');
+  await h.ctx.commands.execute(fresh, '/whalewing {"action":"automation_claim","purpose":"knowledge"}', [], new AbortController().signal);
+  await assert.rejects(h.ctx.whalewingExperts.prepareModel({ sessionId: fresh.id, automation: true }), { code: 'MODEL_UNAVAILABLE' });
 });
 
 test('自动任务用途从目标版JSONL冷日志恢复，普通fork排除父用途且未激活Agent', { timeout: 15000 }, async t => {
   const h = await harness(t);
-  h.ctx.sessionProjections.register(automationProjection);
-  await h.ctx.plugin(SessionPersistenceJsonl, { root: path.join(h.directory, 'sessions') });
-  await h.ctx.plugin(SessionQuery);
-  h.ctx.commands.register({ name: 'whalewing', description: '冷投影测试回执', handler: async () => ({ kind: 'success', text: JSON.stringify({ action: 'automation_claim', purpose: 'custom' }) }) });
-  const created = await h.ctx.agents.create({ sessionId: 'cold-auto', agentOptions: { provider: 'fixture', model: 'fixture' } });
-  await h.ctx.commands.execute(created.agent, '/whalewing', [], new AbortController().signal);
+  const created = await h.ctx.agents.create({ sessionId: 'cold-auto', meta: { agentPreset: 'standard' }, agentOptions: { provider: 'fixture', model: 'fixture' } });
+  await h.ctx.commands.execute(created.agent, '/whalewing {"action":"automation_claim","purpose":"custom"}', [], new AbortController().signal);
   assert.equal(await h.ctx.sessions.flush(created.agent.session), true);
   await created.dispose();
   assert.equal(h.ctx.agents.get('cold-auto'), undefined);
@@ -800,7 +812,7 @@ test('自动任务用途从目标版JSONL冷日志恢复，普通fork排除父�
 });
 
 test('未适配的DSH：专家不切换专属模型也不写全局默认，列不出MCP时不拦截请求', { timeout: 15000 }, async t => {
-  const h = await harness(t, true, {}, 'original');
+  const h = await harness(t);
   // 宿主有 MCP 服务但没有目录接口：专家不做绑定过滤，照常发请求。
   h.ctx.provide('mcpResources', {});
   const api = h.ctx.whalewingExperts;
@@ -816,4 +828,39 @@ test('未适配的DSH：专家不切换专属模型也不写全局默认，列�
   assert.deepEqual(prepared, { selected: { provider: 'fixture', model: 'fixture' }, applied: false });
   const catalog = await api.manage({ action: 'catalog' });
   assert.equal(catalog.mcpSupported, false); assert.equal(catalog.modelSupported, false); assert.deepEqual(catalog.mcpServers, []);
+});
+
+
+test('四可选原生fiber关闭与重载不卸载五底座，独立持久域保留且模型技能知识仍可用', { timeout: 15000 }, async t => {
+  const h = await harness(t), ctx = h.ctx;
+  ctx.provide('profileContext', { dir: h.directory });
+  const hosts = [AiWeb, Toolbox, Cards, ModelWorld], fibers = [];
+  for (const host of hosts) fibers.push(await ctx.plugin(host));
+  const aiInput = { action: 'save', id: 'custom-12345678-1234-4234-8234-123456789abc', expectedRevision: 0, entry: { name: '保留入口', url: 'https://example.com/' } };
+  await ctx.whalewingAiWeb.manageAiWeb(aiInput);
+  const news = await ctx.whalewingCards.manageNews({ action: 'list' });
+  const world = await ctx.whalewingModelWorld.manageModelWorld({ action: 'status' });
+  const previous = [ctx.whalewingAiWeb, ctx.whalewingCards, ctx.whalewingModelWorld];
+  for (const fiber of fibers) await fiber.dispose();
+  assert.deepEqual(ctx.whalewing.features().features.map(feature => [feature.id, feature.kind, feature.error]), ['experts', 'assistant', 'knowledge', 'skills', 'automation'].map(id => [id, 'base', undefined]));
+  for (const name of ['whalewingAiWeb', 'whalewingCards', 'whalewingModelWorld']) assert.equal(ctx.get(name), undefined);
+  assert.equal((await ctx.whalewingKnowledge.manage({ action: 'status' })).initialized, true);
+  const found = await ctx.whalewingKnowledge.manage({ action: 'search' }); assert.ok(found.notes.length);
+  assert.ok((await ctx.whalewingKnowledge.manage({ action: 'read', path: found.notes[0].path })).content);
+  assert.ok(await ctx.whalewingSkills.manageSkills({ action: 'list' }));
+  assert.deepEqual((await ctx.whalewingAutomation.manageAutomation({ action: 'catalog' })).tasks, []);
+  assert.ok(await ctx.whalewingAutomation.manageAutomation({ action: 'directory' }));
+  assert.equal((await h.run({ expertId: 'development' })).result.kind, 'success');
+  const role = ctx.whalewingExperts.get('development');
+  assert.ok((await ctx.whalewingExperts.prepareModel({ sessionId: h.agent.id, expertId: role.id, expectedRevision: role.revision })).selected);
+  await turn(ctx, h.agent); assert.equal(h.adapter.requests.length, 1);
+  for (const [action, args] of [['browse', {}], ['question', { question: '现有知识', paths: [found.notes[0].path] }]]) {
+    const result = await ctx.commands.execute(h.agent, `/whalewing ${JSON.stringify({ action, ...args })}`, [], new AbortController().signal);
+    assert.equal(result.result.kind, 'success');
+  }
+  for (const host of hosts) await ctx.plugin(host);
+  assert.ok((await ctx.whalewingAiWeb.manageAiWeb({ action: 'list' })).entries.some(entry => entry.id === aiInput.id));
+  assert.deepEqual((await ctx.whalewingCards.manageNews({ action: 'list' })).fields, news.fields);
+  assert.deepEqual(await ctx.whalewingModelWorld.manageModelWorld({ action: 'status' }), world);
+  for (const [host, method] of [[previous[0], 'manageAiWeb'], [previous[1], 'manageNews'], [previous[2], 'manageModelWorld']]) await assert.rejects(host[method]({ action: method === 'manageModelWorld' ? 'status' : 'list' }), /卸载/);
 });

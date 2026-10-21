@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
 import { assertAvatarDimensions, parseAvatarData, readAvatarFile } from '../src/avatar-image.js';
-import { ExpertStore, validateAvatar } from '../src/expert-store.js';
+import { ExpertStore, validateAvatar } from '../features/experts/store.js';
 
 async function picture(width, height, format = 'png') {
   const bytes = await sharp({ create: { width, height, channels: 4, background: '#aabbcc' } })[format]().toBuffer();

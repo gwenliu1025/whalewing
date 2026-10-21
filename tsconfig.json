@@ -1,0 +1,10 @@
+{
+  // 只给 esbuild 用：它按就近 tsconfig 决定插件自身源码的严格模式与类字段语义。
+  // 取值与插件原先所在工作区根 tsconfig 对 esbuild 生效的部分一致；放在插件目录里，
+  // 生成物就不随插件所在的上层目录变化（node_modules 里的依赖不受影响）。
+  "compilerOptions": {
+    "strict": true,
+    "target": "es2024",
+    "verbatimModuleSyntax": false
+  }
+}

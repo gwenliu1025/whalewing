@@ -6,9 +6,9 @@ import path from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry';
 import { z } from 'zod';
-import Whalewing from '../index.js';
+import { mountFeatures } from './feature-fixture.mjs';
 import { Vault } from '../src/vault.js';
-import { knowledgeContract } from '../src/knowledge-contract.js';
+import { knowledgeContract } from '../features/knowledge/contract.js';
 
 const contract = knowledgeContract(z);
 const note = (title, body = '', aliases = []) => `---\ntype: atomic\nstatus: seedling\ncreated: 2026-10-09\nupdated: 2026-10-09\naliases: ${JSON.stringify(aliases)}\n---\n# ${title}\n\n${body}\n`;
@@ -136,33 +136,25 @@ test('无会话正式Host入口采用严格同源契约，模型/定时动作与
   ctx.provide('commands', { register() {} }); ctx.provide('sessionProjections', { register() {} });
   ctx.provide('sessions', { create() { creates++; }, flush() { assert.fail('不应落盘会话'); } });
   ctx.provide('sessionQuery', {}); ctx.provide('skills', {});
-  const service = isolatedService(ctx, directory, { vaultRoot: path.join(directory, 'direct-vault') });
+  const { service, knowledge } = await mountFeatures(ctx, directory, { vaultRoot: path.join(directory, 'direct-vault') }, false);
   t.after(() => ctx.fiber.dispose());
-  for (const input of [{ action: 'schedule_run' }, { action: 'source_read' }, { action: 'status', caller: { kind: 'human' } }, { action: 'status', domain: 'skill' }]) await assert.rejects(service.manage(input));
-  const status = await service.manage({ action: 'status' });
+  for (const input of [{ action: 'schedule_run' }, { action: 'source_read' }, { action: 'status', caller: { kind: 'human' } }, { action: 'status', domain: 'skill' }]) await assert.rejects(knowledge.manage(input));
+  const status = await knowledge.manage({ action: 'status' });
   contract.result.parse(status); assert.equal(status.initialized, true); assert.equal(creates, 0);
   const name = '40-知识/依据.md';
-  await service.manage({ action: 'write', path: name, content: note('依据', '期限为三天。'), expectedHash: '' });
-  for (const input of [{ action: 'search', query: '' }, { action: 'document', path: name }, { action: 'graph' }, { action: 'validate' }, { action: 'read', path: name }]) contract.result.parse(await service.manage(input));
-  const prepared = await service.manage({ action: 'question', question: '期限是什么？', paths: [name] });
+  await knowledge.manage({ action: 'write', path: name, content: note('依据', '期限为三天。'), expectedHash: '' });
+  for (const input of [{ action: 'search', query: '' }, { action: 'document', path: name }, { action: 'graph' }, { action: 'validate' }, { action: 'read', path: name }]) contract.result.parse(await knowledge.manage(input));
+  const prepared = await knowledge.manage({ action: 'question', question: '期限是什么？', paths: [name] });
   contract.result.parse(prepared); assert.equal(prepared.sources.length, 1); assert.match(prepared.prompt, /10: 期限为三天/); assert.match(prepared.prompt, /默认只回答/); assert.match(prepared.prompt, /#L行号/);
   assert.equal((await service.vault.settings()).sources.length, 0);
-  await assert.rejects(service.manage({ action: 'question', question: '问题', paths: [name, name] }), { code: 'QUESTION' });
+  await assert.rejects(knowledge.manage({ action: 'question', question: '问题', paths: [name, name] }), { code: 'QUESTION' });
   const hash = (await service.vault.read(name)).hash;
-  await assert.rejects(service.manage({ action: 'write', path: name, content: note('依据'), expectedHash: '' }), error => {
+  await assert.rejects(knowledge.manage({ action: 'write', path: name, content: note('依据'), expectedHash: '' }), error => {
     assert.equal(error.code, 'CONFLICT');
     assert.deepEqual(error.details, {});
     return true;
   });
   assert.equal((await service.vault.read(name)).hash, hash);
   await service.core.dispose();
-  await assert.rejects(service.manage({ action: 'status' }), /已卸载/);
+  await assert.rejects(knowledge.manage({ action: 'status' }), /已卸载/);
 });
-
-// 构造时解析一次隔离根，立即恢复进程环境，测试不会触及真实员工技能目录。
-function isolatedService(ctx, directory, config) {
-  const previous = process.env.DSH_HOME;
-  process.env.DSH_HOME = path.join(directory, "dsh");
-  try { return new Whalewing(ctx, config); }
-  finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; }
-}

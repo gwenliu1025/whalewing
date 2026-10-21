@@ -8,7 +8,10 @@ import { readUtilityLicenseAudit, readUtilityLicenseNotice, resolveUtilityPackag
 
 function inputs(roots) {
   const { audit } = readUtilityLicenseAudit();
-  return { inputs: Object.fromEntries([...audit.packages.flatMap(item => item.files.filter(file => file.input).map(file => [path.join(roots(item.name), file.file), {}])), ...audit.assets.filter(asset => asset.input).map(asset => [fileURLToPath(new URL(`../content/utilities/${asset.file}`, import.meta.url)), {}])]) };
+  return { inputs: Object.fromEntries([...audit.packages.flatMap(item => {
+    const root = roots(item.name);
+    return item.files.filter(file => file.input).map(file => [path.join(root, file.file), {}]);
+  }), ...audit.assets.filter(asset => asset.input).map(asset => [fileURLToPath(new URL(`../content/utilities/${asset.file}`, import.meta.url)), {}])]) };
 }
 
 test('完整通知覆盖预构建内嵌许可及来源，不以四包 MIT 代替', () => {
@@ -48,8 +51,16 @@ test('版本与预构建内容变化拒收，不静默沿用旧归属', async t 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'whalewing-utility-license-'));
   t.after(async () => { if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('whalewing-utility-license-')) throw new Error('清理路径越界'); await fs.rm(root, { recursive: true, force: true }); });
   const { audit } = readUtilityLicenseAudit();
-  const roots = name => path.join(root, name);
-  for (const item of audit.packages) for (const entry of item.files) { const target = path.join(roots(item.name), entry.file); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.copyFile(path.join(resolveUtilityPackageRoot(item.name), entry.file), target); }
+  // 只隔离实际变更的包；其余完整审核载体从安装树只读核验，不为拒收用例复制无写入的文件。
+  const mutable = new Set(['exceljs', 'docx']);
+  const installedRoots = new Map(audit.packages.map(item => [item.name, resolveUtilityPackageRoot(item.name)]));
+  const roots = name => mutable.has(name) ? path.join(root, name) : installedRoots.get(name);
+  for (const item of audit.packages) {
+    if (!mutable.has(item.name)) continue;
+    const source = installedRoots.get(item.name), destination = roots(item.name);
+    assert.notEqual(destination, source, '变更只发生在临时副本');
+    for (const entry of item.files) { const target = path.join(destination, entry.file); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.copyFile(path.join(source, entry.file), target); }
+  }
   const metafile = inputs(roots); assert.doesNotThrow(() => readUtilityLicenseNotice({ metafile, resolvePackageRoot: roots }));
   const carrier = path.join(roots('exceljs'), 'dist/exceljs.min.js'); const original = await fs.readFile(carrier);
   await fs.appendFile(carrier, '\n// changed'); assert.throws(() => readUtilityLicenseNotice({ metafile, resolvePackageRoot: roots }), /内容变化/);

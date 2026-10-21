@@ -1,5 +1,4 @@
 /** 工具台只消费用户选件；下载与后台任务仅在当前挂载实例存活。 */
-import { createAiWebView } from './ai-web.js';
 import { utilityTools } from './catalog.js';
 import { decodeAudio, captureFrames } from './media-prep.js';
 
@@ -119,9 +118,9 @@ export function createUtilityRunner(workerSource, platform, onChange) {
   };
 }
 
-/** 返回稳定挂载的工具台与宿主浏览器入口；主 Client 负责 active 和 openBrowser。 */
+/** 返回稳定挂载的工具台；所属功能负责 active 和卸载。 */
 export function createUtilityViews(React, workerSource) {
-  const h = React.createElement, AiWebView = createAiWebView(React);
+  const h = React.createElement;
   const tools = utilityTools;
   const icons = {
     convert: 'M7 7h11l-3-3M17 17H6l3 3',
@@ -304,5 +303,5 @@ export function createUtilityViews(React, workerSource) {
           h('button', { type: 'button', className: 'yj-tool-card-head', 'data-tool-id': tool.id, onClick: event => open(tool, null, event), 'aria-haspopup': 'dialog', 'aria-label': tool.title, style: { all: 'unset', display: 'flex', gap: '12px', alignItems: 'center', cursor: 'pointer' } }, h(ToolIcon, { tool }), h('span', null, h('strong', null, tool.title), h('small', null, `${tool.brief} · ${tool.functions.length} 项功能`))),
           h('div', { className: 'yj-tool-chips' }, tool.functions.map(item => h('button', { type: 'button', key: item.id, className: 'yj-tool-chip', onClick: event => open(tool, item.id, event), 'aria-label': `${tool.title}：${item.title}` }, item.title)))))));
   }
-  return { ToolboxView, AiWebView };
+  return { ToolboxView };
 }

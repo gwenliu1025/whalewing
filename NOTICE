@@ -11,6 +11,10 @@ Apache License 2.0 的授权范围内（另见该许可第 6 条）。你可以�
 分发代码，但发布改版时须换用其他名称和标志，不得暗示改版由鲸翼作者发布或认可；
 如实写明“基于鲸翼”不受此限。
 
+外部二级插件的包名可以使用 dsh-whalewing- 前缀，表示“给鲸翼用的扩展”。
+插件页标题须使用自己的功能名，不得命名为“鲸翼 xx”，不得使用鲸翼标志，
+也不得暗示扩展由鲸翼作者发布或认可。
+
 
 模型世界立绘
 ------------
@@ -31,3 +35,10 @@ CC BY-NC-SA 4.0 单独授权，不适用 Apache License 2.0；商用须先取得
   content/model-world/NOTICE.md 及同目录的 LICENSE 文件
 - 学习卡片引用的 OpenStax（CC BY 4.0）与 Microsoft（MIT）课程内容：
   content/learning 下的许可文件
+  OpenStax 的四篇 *.zh-CN.md 为鲸翼中文翻译，非官方译本，按 CC BY 4.0 提供。
+  固定英文原件、作者署名和许可保留；译文保留历史语境，澄清处标为译注。
+  Microsoft 固定中文原件不改；提示工程基础展示时校订一处零样本术语，正文已注明。
+- 知识图谱布局力改编自 d3-force 与 d3-quadtree（ISC）：
+  src/graph-forces.js 文件头保留来源与许可全文
+- 通用专业技能改编自 anthropics/skills（Apache-2.0）与 obra/superpowers（MIT）：
+  content/skills 下各技能目录的 LICENSE.txt，来源与改动写在各自 SKILL.md 的“来源”一节

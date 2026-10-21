@@ -7,7 +7,7 @@ import { getEventListeners } from 'node:events';
 import { Vault, digest, layout, relativeName, validateNote } from '../src/vault.js';
 import { SkillLibrary } from '../src/skills.js';
 import { WhalewingCore, schedulePrefix } from '../src/service.js';
-import { Automation } from '../src/automation.js';
+import { Automation } from '../features/automation/automation.js';
 
 const note = (title, body = '有来源的任务结论。') => `---\ntype: atomic\nstatus: seedling\ncreated: 2026-10-08\nupdated: 2026-10-08\naliases: []\n---\n\n# ${title}\n\n${body}\n`;
 const skill = (name, body = '先读取来源，检查适用条件，再完成任务并核对结果。') => `---\nname: ${name}\ndescription: 有明确需求时按来源方法完成输入检查与任务验收\n---\n\n${body}\n`;
@@ -329,7 +329,7 @@ test('新知识计划尚未首跑时旧创建和前缀删除均拒收，新自�
   t.after(() => core.dispose());
   const human = { kind: 'human', agent: { session: { id: 'not-claimed' } } };
   await core.execute({ action: 'source_add', sessionId: 'source' }, human);
-  const automation = new Automation({ schedule: () => schedule, projections: async id => ({ values: { whalewingAutomation: id === 'knowledge' ? 'knowledge' : null, whalewingWorkbench: false } }), confirmClaim: async () => {}, prepareModel: async () => {} });
+  const automation = new Automation({ schedule: () => schedule, projections: async id => ({ asOfSeq: 0, values: { whalewingAutomation: id === 'knowledge' ? 'knowledge' : null, whalewingWorkbench: false } }), confirmClaim: async () => {}, prepareModel: async () => {} });
   const { task } = await automation.manage({ action: 'create', sessionId: 'knowledge', purpose: 'knowledge', spec: { daily: { time: '00:15:00', time_zone: 'Asia/Shanghai' } } });
   assert.equal((await core.vault.settings()).profileCoverage, undefined);
   tasks.push({ id: 'prefix-only', sessionId: 'not-claimed', prompt: schedulePrefix, status: 'active' });

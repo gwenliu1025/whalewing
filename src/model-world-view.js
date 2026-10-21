@@ -1,4 +1,4 @@
-import { worldBenchmarks, worldBoards, worldDimensions } from './model-world-contract.js';
+import { worldBenchmarks, worldBoards, worldDimensions } from '../features/model-world/contract.js';
 import { portraitIdFor } from './model-world-roster.js';
 import { worldEfforts, worldIndexAsOf } from './model-world-index.js';
 import { isDomesticVendor, worldCnyPriceAsOf, worldPriceText } from './model-world-cny-prices.js';

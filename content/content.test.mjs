@@ -49,7 +49,7 @@ test('固定规则保留十区、九类型、属性和修订覆盖语义', () =>
 
 test('三基础技能与独立资讯技能的分发、路由与生命周期完整', async () => {
   // 资讯技能只由已认领的自动任务加载，不为扩展分发清单强绑到全部专家。
-  assert.deepEqual((await readdir(join(root, 'skills'))).sort(), [...new Set([...roles.flatMap(role => role.skills), 'whalewing-news'])].sort());
+  assert.deepEqual((await readdir(join(root, 'skills'))).sort(), [...new Set([...roles.flatMap(role => role.skills).filter(name => name.startsWith('whalewing-')), 'whalewing-news'])].sort());
   for (const name of skillNames) {
     const body = await readFile(join(root, 'skills', name, 'SKILL.md'), 'utf8');
     assert.match(body, new RegExp('^---\nname: ' + name + '\ndescription: [^\n]+\n---\n'));
@@ -64,6 +64,48 @@ test('三基础技能与独立资讯技能的分发、路由与生命周期完�
   const check = await readFile(join(root, 'skills/whalewing-check/SKILL.md'), 'utf8');
   assert.match(check, /不代写/u);
   assert.match(check, /不调用知识/u);
+});
+
+// 通用专业技能改编自社区开源技能：每项保留来源、固定提交和许可全文。企业内容由开源导出检查拦截，测试里不写企业名称。
+const generalSkills = { 'whalewing-clarify': 'MIT', 'whalewing-writing': 'Apache', 'whalewing-frontend-design': 'Apache', 'whalewing-coding': 'MIT', 'whalewing-debugging': 'MIT', 'whalewing-web-testing': 'Apache' };
+
+test('通用专业技能格式、来源许可和专家绑定完整', async () => {
+  // 只读功能清单源码，不加载宿主模块；专家团队是基础功能，随包通用技能挂在它下面。
+  const features = await readFile(join(root, '../features/index.js'), 'utf8');
+  const experts = features.split('\n').find(line => line.includes("{ id: 'experts',"));
+  assert.deepEqual([...experts.matchAll(/'(whalewing-[a-z-]+)'/gu)].map(match => match[1]).sort(), Object.keys(generalSkills).sort());
+  for (const [name, license] of Object.entries(generalSkills)) {
+    const body = await readFile(join(root, 'skills', name, 'SKILL.md'), 'utf8');
+    assert.match(body, new RegExp('^---\nname: ' + name + '\ndescription: [^\n]+\n---\n'));
+    assert.match(body, /\n## [^\n]*退出\n/u, name);
+    assert.match(body, /\n## 来源\n[^]*提交 `[0-9a-f]{40}`[^]*LICENSE\.txt/u, name);
+    assert.ok(body.length < 8192, name);
+    const text = await readFile(join(root, 'skills', name, 'LICENSE.txt'), 'utf8');
+    assert.match(text, license === 'MIT' ? /^MIT License\n\nCopyright \(c\) 2025 Jesse Vincent\n/u : /Apache License\s+Version 2\.0/u, name);
+    assert.ok(roles.some(role => role.skills.includes(name)), `${name} 至少绑定一位专家`);
+  }
+  // Office 文件交给 DSH 自带的 office 技能，鲸翼不复制专有 Office 技能。
+  for (const id of ['manager', 'presales', 'implementation']) assert.ok(roles.find(role => role.id === id).skills.includes('office'), id);
+  for (const role of roles) assert.ok(role.skills.length <= (role.id === 'manager' ? 7 : 6), role.id);
+});
+
+test('小鲸默认保留原技能并绑定可复制的插件管理方法', async () => {
+  const manager = roles.find(role => role.id === 'manager');
+  assert.deepEqual(manager.skills, [...skillNames, 'whalewing-clarify', 'whalewing-writing', 'office', 'whalewing-plugin-management']);
+  assert.ok(roles.filter(role => role.id !== 'manager').every(role => !role.skills.includes('whalewing-plugin-management')));
+  const features = await readFile(join(root, '../features/index.js'), 'utf8');
+  assert.match(features, /id: 'assistant', kind: 'base', skills: \['whalewing-plugin-management'\]/u);
+  const body = await readFile(join(root, 'skills/whalewing-plugin-management/SKILL.md'), 'utf8');
+  assert.match(body, /^---\nname: whalewing-plugin-management\ndescription: [^\n]+\n---\n/u);
+  for (const boundary of ['plugin_manager', 'nextOffset', 'entryId', 'EXTENDING.md', 'MAINTAINING.md', 'examples/feature-starter', 'examples/stateful-feature', 'link:', '审批', '退出']) assert.ok(body.includes(boundary), boundary);
+  // 退出规则只在公开规范持有；技能必须直达该处，不为文字检查复制第二份流程。
+  assert.ok(body.includes('关闭、卸载、删除源码与清除数据'));
+  assert.ok(body.includes('按该处完整流程执行和核验'));
+  const extending = await readFile(join(root, '../EXTENDING.md'), 'utf8');
+  for (const boundary of ['stop-profile', '全部已知', 'link:', '独立的 DSH 原生插件页', 'Creator', '最后操作及其结果核验', '持久计划']) assert.ok(extending.includes(boundary), boundary);
+  assert.ok(body.length < 8192);
+  assert.ok(!/[A-Z]:[\\/]|\.\.\/[.][.]\//u.test(body), '不依赖开发者本机路径或复制技能的父目录');
+  assert.ok(!body.includes('dsh plugin enable'), '不发明不存在的专用CLI');
 });
 
 test('分类反例：已确认保留的未消化外部材料不进收件箱', async () => {

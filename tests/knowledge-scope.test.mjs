@@ -6,7 +6,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { Vault, readableName } from '../src/vault.js';
 import { parseLinks, resolveLinks } from '../src/links.js';
-import { knowledgeContract } from '../src/knowledge-contract.js';
+import { knowledgeContract } from '../features/knowledge/contract.js';
 
 const contract = knowledgeContract(z);
 const record = (path, body, aliases = []) => ({ path, title: path.split('/').at(-1).replace(/\.md$/i, ''), aliases, parsed: parseLinks(body) });

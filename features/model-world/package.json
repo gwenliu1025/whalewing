@@ -1,0 +1,6 @@
+{
+  "name": "dsh-whalewing-model-world",
+  "type": "module",
+  "description": "查询模型资料、榜单和价格。",
+  "icon": "./icon.svg"
+}

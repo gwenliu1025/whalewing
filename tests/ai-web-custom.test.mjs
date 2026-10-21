@@ -9,8 +9,10 @@ import * as StorageJson from '@deepseek-ai/dsh-storage-json';
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import sharp from 'sharp';
-import { AiWebStore, aiWebDomain } from '../src/ai-web-store.js';
-import { aiWebEntries, aiWebContract, findAiWebEntries, openAiWebsite } from '../src/utilities/ai-web.js';
+import { AiWebStore, aiWebDomain } from '../features/ai-web/store.js';
+import { aiWebContract } from '../features/ai-web/contract.js';
+import { aiWebEntries } from '../features/ai-web/catalog.js';
+import { findAiWebEntries, openAiWebsite } from '../features/ai-web/client-api.js';
 import { aiWebIcons } from '../src/utilities/ai-web-icons.js';
 
 const id = 'custom-85e1008c-acfe-4fea-956c-d402ccf2be67';

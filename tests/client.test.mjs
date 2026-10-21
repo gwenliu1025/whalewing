@@ -1,29 +1,19 @@
-import { aiWebContract, aiWebEntries } from '../src/utilities/ai-web.js';
-import { dailyLearning } from '../src/learning-cards.js';
-import { readAvatarFile } from '../src/avatar-image.js';
-import { createModelWorldView, worldViewCopy } from '../src/model-world-view.js';
-import { explainError } from '../src/error-guide.js';
+import { fixture, remoteScope, roles, emptyGraph, success } from './client-fixture.mjs';
+import { parts } from '../features/index.js';
+import { aiWebEntries } from '../features/ai-web/catalog.js';
+import { dailyLearning } from '../features/cards/learning-cards.js';
+import { worldViewCopy } from '../src/model-world-view.js';
+import { explainError } from '../src/shell/presentation-content.js';
 const shown = (code, message) => explainError(code, message).text;
-import { createUtilityViews } from '../src/utilities/views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createClient } from '../src/client.js';
-import { knowledgeContract } from '../src/knowledge-contract.js';
-import { expertContract } from '../src/expert-contract.js';
-import { skillLibraryContract } from '../src/skill-library-contract.js';
-import { automationContract } from '../src/automation-contract.js';
-import { newsContract } from '../src/news-contract.js';
-import { modelWorldContract } from '../src/model-world-contract.js';
-import { defaultNewsField, newsLimits } from '../src/news.js';
-import { worldAttributions } from '../src/model-world.js';
-import { worldBoards } from '../src/model-world-contract.js';
-import { createGraphCanvas } from '../src/graph-canvas.js';
+import { knowledgeContract } from '../features/knowledge/contract.js';
+import { skillLibraryContract } from '../features/skills/contract.js';
+import { headlineBrief } from '../features/cards/news-evidence.js';
+import { defaultNewsField, newsLimits } from '../features/cards/news.js';
+import { worldAttributions } from '../features/model-world/model-world.js';
+import { worldBoards } from '../features/model-world/contract.js';
 import { z } from 'zod';
-import { formatFileMention } from '@deepseek-ai/dsh-file-reference/grammar';
-
-const roles = [{ id: 'manager', name: '小鲸助手', description: '组织任务' }, { id: 'development', name: '研发专家', description: '修改工程' }].map(role => ({ ...role, revision: 0, builtin: true, avatar: null, prompt: '职责提示词', model: null, skills: [], mcpServers: [] }));
-const emptyGraph = () => knowledgeContract(z).graphResult.parse({ version: 2, nodes: [], edges: [], total: 0, offset: 0, truncated: false, omittedEdges: 0, unresolved: 0 });
-const success = (value) => ({ ok: true, value: { commandId: 'c1', result: { kind: 'success', text: JSON.stringify(value) } } });
 
 test('缺失图节点只展示来源，来源读取失败保留说明，成功后定位真实笔记', async () => {
   const missing = { kind: 'missing', path: 'missing:name:未建立', title: '未建立', degree: 1, sources: [{ path: '40-知识/源.md', title: '源', line: 8 }] };
@@ -83,214 +73,17 @@ test('根级只读笔记保留阅读与导出，编辑保存删除和该笔记�
   assert.equal(requests.some(input => input.action === 'restore'), false);
 });
 
-/** 只模拟已核验的宿主契约，不运行浏览器或创建真实会话。 */
-async function fixture(overrides = {}) {
-  const entries = new Map();
-  const registrations = new Map();
-  const triggerSources = new Map();
-  const eventHandlers = new Map();
-  const calls = [];
-  const presentations = [];
-  const navigation = [];
-  const document = { activeElement: null };
-  const sidebarRight = Object.hasOwn(overrides, 'sidebarRight') ? overrides.sidebarRight : { presentSession(panel, id) { presentations.push(['present', panel, id]); let released = false; return () => { if (!released) { released = true; presentations.push(['release', id]); } }; } };
-  const disposed = [];
-  const dictionaries = new Map();
-  if (overrides.presetLocale) dictionaries.set('settings.agentPreset', { zh: overrides.presetLocale });
-  const timers = new Map();
-  let timerId = 0;
-  const schedule = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; };
-  let state = [];
-  let refs = [];
-  let stateIndex = 0;
-  let refIndex = 0;
-  let effectIndex = 0;
-  let effects = [];
-  const childScopes = new Map();
-  const storage = overrides.storage || new Map();
-  const existing = overrides.existing || new Map();
-  const workspaceCalls = [];
-  const inputs = new Map();
-  const workspaceState = overrides.workspaceState || { items: [{ workspaceId: 'default-workspace', path: 'E:\\默认工作区', sessionIds: [...existing.keys()] }] };
-  const selected = new Map();
-  const modelSelections = new Map();
-  const automationClaims = overrides.automationClaims || new Map();
-  const react = {
-    Fragment: 'fragment',
-    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
-    useState(initial) {
-      const index = stateIndex++;
-      if (!(index in state)) state[index] = typeof initial === 'function' ? initial() : initial;
-      const owner = state;
-      return [owner[index], (value) => { owner[index] = typeof value === 'function' ? value(owner[index]) : value; }];
-    },
-    useRef(initial) {
-      const index = refIndex++;
-      if (!(index in refs)) refs[index] = { current: initial };
-      return refs[index];
-    },
-    useEffect(fn, deps) {
-      const index = effectIndex++;
-      if (!effects[index] || !deps || deps.some((value, i) => value !== effects[index].deps[i])) { effects[index]?.cleanup?.(); effects[index] = { fn, deps, pending: true }; }
-    },
-    useSyncExternalStore: (_subscribe, get) => get(),
-  };
-  const store = (value) => { const listeners = new Set(); return { getSnapshot: () => value, subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); }, set: next => { value = next; listeners.forEach(listener => listener()); } }; };
-  const ctx = {
-    get(name) { if (name === 'sidebarRightTabs') return Object.hasOwn(overrides, 'browserTabs') ? overrides.browserTabs : { get: kind => kind === 'browser' ? { kind } : undefined }; if (name === 'uiSession') return { bindingSource(reference) { const input = inputFor(reference.sessionId); return { getSnapshot: () => ({ key: reference.sessionId, hooks: { input: input.state }, props: { inputActions: input.actions } }) }; } }; assert.equal(name, 'sidebarRight'); return sidebarRight; },
-    on(name, callback) { const handlers = eventHandlers.get(name) || []; handlers.push(callback); eventHandlers.set(name, handlers); return () => eventHandlers.set(name, handlers.filter(item => item !== callback)); },
-    inputTriggers: { registerSource(source) { triggerSources.set(source.name, source); return () => triggerSources.delete(source.name); } },
-    inject(keys, fn) { assert.ok(JSON.stringify(keys) === JSON.stringify(['remote.whalewingKnowledge', 'remote.whalewingExperts']) || JSON.stringify(keys) === JSON.stringify(['uiScheduleNavigation'])); fn(ctx); return { dispose: async () => {} }; },
-    uiScheduleNavigation: { hide() { navigation.push('hide'); return () => navigation.push('restore'); } },
-    effect(fn) { const cleanup = fn(); if (cleanup) disposed.push(cleanup); },
-    locale: {
-      register(ns, values) { dictionaries.set(ns, values); return () => dictionaries.delete(ns); },
-      bind: (ns) => (key, args = {}) => Object.entries(args).reduce((s, [name, value]) => s.replace(`{${name}}`, String(value)), dictionaries.get(ns)?.zh[key] || key),
-    },
-    slots: {
-      inject(slot, fn) { if (!(overrides.missingSlots || []).includes(slot)) fn(); },
-      register(options, Component) { entries.set(options.name, { options, Component }); (registrations.get(options.name) ?? registrations.set(options.name, []).get(options.name)).push({ options, Component }); return () => {}; },
-    },
-    sessions: { list: store({ byId: {} }), subagentAddress: () => undefined, retain: id => ({ sessionId: id, ready: overrides.retainReady || Promise.resolve(), binding: { session: { prompt: async (content, mode, signal = new AbortController().signal, requestId) => { for (const handler of eventHandlers.get('session/before-prompt') || []) await handler({ sessionId: id, signal }); return ctx.remote.session.prompt({ content, mode, sessionId: id, requestId }, signal); } } }, release: () => calls.push(['release', id]) }) },
-    workspaces: {
-      list: store(workspaceState),
-      initializeDefault: overrides.initializeDefault || (async (signal) => { assert.ok(signal instanceof AbortSignal); workspaceCalls.push(['default']); return workspaceState.items[0]; }),
-      create: overrides.createWorkspace || (async ({ path }) => {
-        workspaceCalls.push(['create', path]);
-        let workspace = workspaceState.items.find((item) => item.path === path);
-        if (!workspace) { workspace = { workspaceId: `workspace-${workspaceState.items.length + 1}`, path, sessionIds: [] }; workspaceState.items.push(workspace); }
-        return workspace;
-      }),
-    },
-    uiWorkspace: { openSession(id) { calls.push(['open', id]); } },
-    remote: {
-      $mount(contribution) { assert.equal(contribution.descriptors[0].result.mode, 'strict'); return async () => {}; },
-      whalewingExperts: { manage: async (input, signal) => { if (input.action === 'prepare_model') { const list = overrides.experts ? await overrides.experts({ action: 'list' }) : { value: { experts: roles } }; const role = list.value.experts.find(item => item.id === input.expertId); const model = role.model ?? { provider: 'fixture', model: 'default' }; const receipt = await ctx.remote.session.selectModel({ ...model, sessionId: input.sessionId, saveAsDefault: false }); if (receipt.ok) modelSelections.set(input.sessionId, receipt.value.selected); return receipt; } return (overrides.experts || (async input => { if (input.action === 'list') return { ok: true, value: { experts: roles, deleted: [] } }; if (input.action === 'catalog') return { ok: true, value: { models: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-flash', name: 'DeepSeek v4.1 flash' }] }], defaultModel: { provider: 'deepseek-official', model: 'deepseek-flash' }, skills: [], mcpServers: [], issues: [] } }; throw new Error('unexpected expert action'); }))(input, signal); } },
-      whalewingKnowledge: { manageAiWeb: async (input, signal) => { aiWebContract(z).input.parse(input); calls.push(['aiWeb', input]); return overrides.aiWeb ? overrides.aiWeb(input, signal) : { ok: true, value: { entries: aiWebEntries } }; }, manageNews: async (input, signal) => { newsContract(z).manage.parse(input); calls.push(['news', input]); if (overrides.news) return overrides.news(input, signal); throw new Error('unexpected news action'); }, manageModelWorld: async (input, signal) => { modelWorldContract(z).input.parse(input); calls.push(['world', input]); if (overrides.world) return overrides.world(input, signal); throw new Error('unexpected world action'); }, manageAutomation: async (input, signal) => { automationContract(z).input.parse(input); if (input.action === 'directory') return { ok: true, value: { directory: 'E:\\DSH\\whalewing-tasks' } }; calls.push(['automation', input]); if (overrides.automation) return overrides.automation(input, signal); if (input.action === 'catalog') return { ok: true, value: { available: true, tasks: [], legacyTasks: [], issues: [] } }; throw new Error('unexpected automation action'); }, manageSkills: async (input, signal) => { skillLibraryContract(z).input.parse(input); if (overrides.skillLibrary) return overrides.skillLibrary(input, signal); if (input.action === 'list') return { ok: true, value: { entries: [], offset: input.offset || 0, total: 0, truncated: false } }; throw new Error('unexpected skill library action'); }, manage: async (input, signal) => {
-        calls.push(['knowledge', input]);
-        if (overrides.knowledge) return overrides.knowledge(input, signal);
-        if (overrides.execute) {
-          const reply = await overrides.execute(undefined, '/whalewing ' + JSON.stringify(input), []);
-          if (!reply.ok) return reply;
-          if (reply.value.result.kind !== 'success') return { ok: false, error: JSON.parse(reply.value.result.text) };
-          const value = JSON.parse(reply.value.result.text);
-          if (input.action === 'document') Object.assign(value, { view: { type: 'text', value: value.content, line: 1 }, links: [], anchors: [], backlinks: [], totalBacklinks: 0 });
-          return { ok: true, value };
-        }
-        if (input.action === 'graph') return { ok: true, value: emptyGraph() };
-        if (input.action === 'search') return { ok: true, value: { notes: [], truncated: false, total: 0 } };
-        return { ok: true, value: { initialized: true, root: 'fixture-vault' } };
-      } },
-      commands: { execute: async (id, line, args) => {
-        if (line.startsWith('/whalewing-expert ')) {
-          calls.push(['expert', id, JSON.parse(line.slice('/whalewing-expert '.length))]);
-          if (overrides.expertExecute) { const reply = await overrides.expertExecute(id, line, args); const input = JSON.parse(line.slice('/whalewing-expert '.length)); if (reply.ok && reply.value?.result?.kind === 'success' && Object.hasOwn(input, 'expertId')) selected.set(id, JSON.parse(reply.value.result.text).expertId); return reply; }
-          const input = JSON.parse(line.slice('/whalewing-expert '.length));
-          if (Object.hasOwn(input, 'expertId')) selected.set(id, input.expertId);
-          return success({ expertId: selected.get(id) ?? null });
-        }
-        const input = JSON.parse(line.slice('/whalewing '.length));
-        if (input.action === 'workspace_attach') {
-          calls.push(['attach', id, input]);
-          if (overrides.attach) return overrides.attach(id, input);
-          const workspaceId = 'host-workspace';
-          let workspace = workspaceState.items.find((item) => item.workspaceId === workspaceId);
-          if (!workspace) { workspace = { workspaceId, path: 'E:\\宿主实际目录', sessionIds: [] }; workspaceState.items.push(workspace); }
-          if (!workspace.sessionIds.includes(id)) workspace.sessionIds.push(id);
-          return success({ sessionId: id, workspaceId });
-        }
-        if (input.action === 'workbench_claim') { calls.push(['claim', id]); existing.set(id, true); return success({ claimed: true }); }
-        if (input.action === 'workbench_confirm') { calls.push(['confirm', id]); if (overrides.confirmWorkbench) return overrides.confirmWorkbench(id); return success({ action: input.action, persisted: true }); }
-        if (input.action === 'automation_claim') { calls.push(['automationClaim', id, input]); if (overrides.automationClaim) return overrides.automationClaim(id, input); automationClaims.set(id, input.purpose); return success({ action: input.action, purpose: input.purpose }); }
-        if (overrides.execute) return overrides.execute(id, line, args);
-        calls.push(['command', id, line, args]);
-        if (input.action === 'search') return success({ notes: [] });
-        if (input.action === 'list') return success({ skills: [] });
-        if (input.action === 'sources') return success({ sources: [] });
-        if (input.action === 'schedule_list') return success({ tasks: [] });
-        return success({ initialized: true, root: 'fixture-vault' });
-      } },
-      agentPresets: { list: overrides.modes || (async () => ({ ok: true, value: { presets: [{ id: 'standard', name: '标准模式' }, { id: 'cordis', name: '创造模式' }] } })) },
-      session: {
-        selectModel: async input => ({ ok: true, value: { selected: { provider: input.provider, model: input.model, ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}) } } }),
-        prompt: overrides.prompt || (async request => { calls.push(['prompt', request]); return { ok: true, value: { accepted: true } }; }),
-        create: overrides.create || (async (request) => {
-          const id = request.sessionId || 'new-session'; calls.push(['create', request]);
-          if (!existing.has(id)) existing.set(id, false);
-          const workspace = workspaceState.items.find((item) => item.workspaceId === request.workspaceId);
-          if (workspace && !workspace.sessionIds.includes(id)) workspace.sessionIds.push(id);
-          return { ok: true, value: { sessionId: id } };
-        }),
-        rename: overrides.rename || (async (request) => { calls.push(['rename', request]); return { ok: true, value: { title: request.title } }; }),
-        projections: overrides.projections || (async ({ sessionId }) => { calls.push(['projections', sessionId]); return { ok: true, value: (existing.has(sessionId) || selected.has(sessionId)) ? { values: { whalewingAutomation: automationClaims.get(sessionId) ?? null, modelSelection: { next: modelSelections.get(sessionId) }, whalewingWorkbench: existing.get(sessionId), ...(selected.has(sessionId) ? { whalewingExpert: { expertId: selected.get(sessionId) } } : {}) } } : null }; }),
-      },
-    },
-  };
-  function inputFor(id) {
-    if (!inputs.has(id)) {
-      const state = store({ draft: '', draftRev: 0, phase: 'plain', attachmentIds: [], occurrences: [] });
-      const inserts = [];
-      const actions = {
-        captureInsertion: () => ({ start: 0, end: state.getSnapshot().draft.length, draftRev: state.getSnapshot().draftRev }),
-        insertText(text, span) {
-          const current = state.getSnapshot();
-          if (['adjudicating', 'submitting'].includes(current.phase) || current.draftRev !== span.draftRev || overrides.rejectInsert) return false;
-          inserts.push({ text, span });
-          state.set({ ...current, draft: current.draft.slice(0, span.start) + text + current.draft.slice(span.end), draftRev: current.draftRev + 1 });
-          return true;
-        },
-        setDraft() { assert.fail('提议不得整体替换原生富草稿'); },
-        submit() { assert.fail('提议不得自动发送'); },
-      };
-      inputs.set(id, { state, actions, inserts });
-    }
-    return inputs.get(id);
-  }
-  const load = name => {
-    if (name === 'react') return react;
-    if (name === 'zod') return { z };
-    assert.fail(`插件不得导入内部客户端模块：${name}`);
-  };
-  // 与生产生成方式一致：闭包外变量不会被偷偷依赖。
-  const windowEvents = new Map();
-  const browser = { innerWidth: 1440, innerHeight: 900, addEventListener(name, fn) { const listeners = windowEvents.get(name) || new Set(); listeners.add(fn); windowEvents.set(name, listeners); }, removeEventListener(name, fn) { windowEvents.get(name)?.delete(fn); }, matchMedia: overrides.matchMedia, location: { origin: overrides.origin || 'http://fixture.local' }, localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) } };
-  const plugin = new Function('require', 'roles', 'window', 'document', 'setTimeout', 'clearTimeout', 'z', 'formatFileMention', 'graphFactory', 'newsFactory', 'worldFactory', 'utilityFactory', 'featureViews', 'automationFactory', `return (${createClient.toString()})(require, (${knowledgeContract.toString()}), (${expertContract.toString()}), z, formatFileMention, graphFactory, (${skillLibraryContract.toString()}), automationFactory, newsFactory, worldFactory, utilityFactory, featureViews);`)(load, roles, browser, document, schedule, (id) => timers.delete(id), z, formatFileMention, createGraphCanvas, newsContract, modelWorldContract, React => createUtilityViews(React, 'fixture-worker'), {aiWebContract, readAvatarFile, createModelWorldView, worldViewCopy, explainError, portraits: {}}, automationContract);
-  disposed.push(await plugin.apply(ctx));
-  const page = entries.get('main');
-  const t = ctx.locale.bind('whalewing');
-  const props = { ...page.options.inject(), t };
-  await props.api.loadExperts();
-  // 子组件持有独立 hooks；从正式 Workbench 取得组件和 props，不另造接线。
-  function expand(tree, path = 'root', inside = false, seen = new Set()) {
-    if (!tree || typeof tree !== 'object') return tree;
-    if (Array.isArray(tree)) return tree.map((node, index) => expand(node, `${path}/${index}`, inside, seen));
-    if (typeof tree.type === 'function' && (inside || ['ModelWorldView', 'WorkspacePicker', 'Modal', 'ConfirmDialog', 'Drawer', 'Toast', 'ExpertPicker', 'BookReader', ...(overrides.expand || [])].includes(tree.type.name))) {
-      const id = `${path}/${tree.type.name}/${tree.props.key ?? ''}`; seen.add(id);
-      const local = childScopes.get(id) || { state: [], refs: [], effects: [] }; childScopes.set(id, local);
-      const previous = [state, refs, effects, stateIndex, refIndex, effectIndex];
-      [state, refs, effects] = [local.state, local.refs, local.effects]; stateIndex = refIndex = effectIndex = 0;
-      const output = tree.type(tree.props);
-      [state, refs, effects, stateIndex, refIndex, effectIndex] = previous;
-      return expand(output, id, true, seen);
-    }
-    return { ...tree, props: { ...tree.props, children: expand(tree.props?.children, path + '/children', inside, seen) } };
-  }
-  function render(slot = 'main', extra = {}) {
-    stateIndex = 0; refIndex = 0; effectIndex = 0;
-    const entry = entries.get(slot);
-    const seen = new Set();
-    const page = entry.Component({ SessionProvider: 'SessionProvider', renderSlot: name => ({ type: name, props: { children: [] } }), ...entry.options.inject?.(), t, ...extra });
-    // 报错、成功和恢复入口改在右上角提示里显示；主页面渲染时一并带上，断言的是员工实际能看到的内容。
-    const overlay = slot === 'main' && entries.get('shell.overlay');
-    const tree = expand(overlay ? { type: 'fragment', props: { children: [page, { type: overlay.Component, props: {} }] } } : page, 'root', false, seen);
-    for (const [id, local] of childScopes) if (!seen.has(id)) { local.effects.forEach(effect => effect.cleanup?.()); childScopes.delete(id); }
-    return tree;
-  }
-  function flushEffects() { for (const list of [effects, ...[...childScopes.values()].map(local => local.effects)]) for (const effect of list) if (effect.pending) { effect.pending = false; effect.cleanup = effect.fn(); } }
-  function unmount() { for (const list of [effects, ...[...childScopes.values()].map(local => local.effects)]) list.forEach(effect => effect.cleanup?.()); }
-  function isolate(node) { state.length = 0; refs.length = 0; effects.length = 0; return () => { stateIndex = 0; refIndex = 0; effectIndex = 0; return node.type(node.props); }; }
-  return { registrations, document, navigation, inputFor, inputs, browser, windowEvents, presentations, eventHandlers, triggerSources, ctx, calls, entries, disposed, dictionaries, timers, plugin, api: props.api, render, isolate, flushEffects, unmount, storage, existing, automationClaims, workspaceCalls, workspaceState };
-}
+test('严格Remote夹具拒绝未声明的新命名空间，子scope只继承明确依赖', () => {
+  const raw = { remote: { whalewingKnowledge: {}, whalewingCards: {} } };
+  const scope = remoteScope(raw, ['remote', 'remote.whalewingKnowledge']);
+  assert.equal(scope.remote.whalewingKnowledge, raw.remote.whalewingKnowledge);
+  assert.throws(() => scope.remote.whalewingCards, /remote.whalewingCards.*without inject/);
+  scope.inject(['remote.whalewingCards'], child => {
+    assert.equal(child.remote.whalewingKnowledge, raw.remote.whalewingKnowledge);
+    assert.equal(child.remote.whalewingCards, raw.remote.whalewingCards);
+  });
+  assert.throws(() => scope.remote.whalewingCards, /without inject/, '子scope不会把权限回灌父级');
+});
 
 function nodes(tree) {
   if (tree === null || tree === undefined || tree === false) return [];
@@ -306,7 +99,7 @@ async function mountedAssistant(f) {
   const start = button(render(), '开始与小鲸协作').props.onClick;
   await start(); for (let i = 0; i < 3; i++) { render(); f.flushEffects(); await new Promise(setImmediate); }
   const reference = nodes(render()).find(node => node.type === 'SessionProvider').props.session;
-  f.api.mountAssistantInput(reference.sessionId);
+  f.clients.assistant.mountAssistantInput(reference.sessionId);
   return { render, start, reference, tick: async () => { for (let i = 0; i < 3; i++) { render(); f.flushEffects(); await new Promise(setImmediate); } } };
 }
 /** 测试宿主在子会话 effect 恢复草稿之后通知外层挂载完成。 */
@@ -315,7 +108,7 @@ async function discuss(f, action) {
   await new Promise(setImmediate);
   f.render(); f.flushEffects();
   const sessionId = nodes(f.render()).find(node => node.type === 'SessionProvider').props.session.sessionId;
-  const release = f.api.mountAssistantInput(sessionId);
+  const release = f.clients.assistant.mountAssistantInput(sessionId);
   try { await pending; } finally { release(); }
 }
 function button(tree, label) {
@@ -368,6 +161,20 @@ test('日报卡片只放标题与分类，传闻和媒体单独标注，点开�
   assert.ok(nodes(dialog).some(n => n.type === 'a' && n.props.href === 'https://www.anthropic.com/claude-haiku-5-5' && n.props.children.join('') === 'anthropic.com/claude-haiku-5-5'), '一手链接去掉协议头显示');
   dialog.props.onCancel({ preventDefault() {} });
   assert.equal(nodes(f.render()).some(n => n.type === 'dialog'), false);
+  const locale = f.dictionaries.get('whalewing');
+  assert.equal(locale.zh.newsViewSource, '查看来源');
+  assert.equal(locale.en.newsViewSource, 'View source');
+  // 官方、传闻、媒体沿用已保存标签，链接标题不擅自把媒体兜底升格为一手证据。
+  for (let i = 0; i < report.items.length; i++) {
+    cards[i].props.onClick();
+    const detail = nodes(f.render()).find(n => n.type === 'dialog');
+    assert.ok(nodes(detail).some(n => n.type === 'strong' && n.props.children.includes('查看来源')));
+    assert.equal(JSON.stringify(detail).includes('一手来源'), false);
+    assert.deepEqual(nodes(detail).filter(n => n.props?.className?.startsWith?.('yj-brief-flag')).map(n => n.props.children.join('')), [[], ['内测 / 传闻'], ['媒体报道']][i]);
+    assert.ok(nodes(detail).some(n => n.type === 'a' && n.props.href === report.items[i].link));
+    assert.ok(nodes(detail).some(n => n.type === 'a' && n.props.href === source.url), '原始候选来源仍可打开');
+    detail.props.onCancel({ preventDefault() {} });
+  }
 });
 
 test('每个领域默认一行四张，展开再加一行，最多八条；旧版日报的重要性只在弹框里', async () => {
@@ -497,16 +304,20 @@ test('资讯独立news会话启用不传Client spec，回执未知重载后仅�
     throw new Error('资讯计划回执未知');
   };
   const f = await fixture({ news, automation });
-  await assert.rejects(f.api.createAutomation({ purpose: 'news', cwd: 'E:\\资讯' }, false, new AbortController().signal), /资讯计划回执未知/); const id = f.api.pendingAutomation().sessionId;
+  await assert.rejects(f.clients.automation.createAutomation({ purpose: 'news', cwd: 'E:\\资讯' }, false, new AbortController().signal), /资讯计划回执未知/); const id = f.clients.automation.pendingAutomation().sessionId;
   assert.deepEqual(JSON.parse([...f.storage.values()][0]), { sessionId: id, purpose: 'news' });
-  const resumed = await fixture({ news, automation, storage: f.storage, existing: f.existing, automationClaims: f.automationClaims });
+  const resumed = await fixture({ news, automation, storage: f.storage, existing: f.existing, automationClaims: f.automationClaims, workspaceState: f.ctx.workspaces.list.getSnapshot() });
   await button(resumed.render(), '定时任务').props.onClick(); await button(resumed.render(), '查看原会话和计划').props.onClick();
-  assert.equal(resumed.api.pendingAutomation(), null); assert.equal(resumed.calls.some(([kind]) => ['create', 'automationClaim', 'prompt'].includes(kind)), false);
+  assert.equal(resumed.clients.automation.pendingAutomation(), null); assert.equal(resumed.calls.some(([kind]) => ['create', 'automationClaim', 'prompt'].includes(kind)), false);
 });
 
+// 分块到达后需要一次组件提交，再推进真实视图自己的读取 effect。
+async function settleView(f) {
+  for (let i = 0; i < 3; i++) { f.render(); f.flushEffects(); await new Promise(setImmediate); }
+}
 async function worldReady(f, tab) {
   await button(f.render(), '模型世界').props.onClick();
-  f.render(); f.flushEffects(); await new Promise(setImmediate);
+  await settleView(f);
   if (tab) { button(f.render(), tab).props.onClick(); await new Promise(setImmediate); }
   return f.render();
 }
@@ -585,7 +396,11 @@ test('模型世界待请求禁用入口，取消或卸载后迟到结果不替�
     const f=await fixture({world:async input=>{if(blocked)await release.promise;return {ok:true,value:worldReply(input,[worldModel(blocked?'late':'original')])};}});await worldReady(f,'发布时间线');blocked=true;
     const pending=button(f.render(),'更新数据').props.onClick();assert.equal(button(f.render(),'更新数据').props.disabled,true);
     if(unmount)f.unmount();else button(f.render(),'取消').props.onClick();release.resolve();await pending;
-    const value=JSON.stringify(f.render());assert.ok(value.includes('合成模型 original'));assert.equal(value.includes('合成模型 late'),false);
+    const value=JSON.stringify(f.render());
+    if(unmount) { assert.equal(nodes(f.render()).find(node => node.props['data-tab'] === 'experts').props['aria-pressed'], true); }
+    else assert.ok(value.includes('合成模型 original'));
+    assert.equal(value.includes('合成模型 late'),false);
+    if(unmount) { blocked=false; const fresh=JSON.stringify(await worldReady(f,'发布时间线')); assert.ok(fresh.includes('合成模型 original')); assert.equal(fresh.includes('合成模型 late'),false); }
   }
 });
 
@@ -594,12 +409,12 @@ test('资讯与模型世界拒收错动作、错身份和非法来源，不抹�
     news: async input => ({ ok: true, value: input.action === 'report' ? { report: newsSavedReport({ fieldId: 'other' }) } : { report: null } }),
     world: async input => ({ ok: true, value: input.action === 'detail' ? worldReply(input, [worldModel('wrong')]) : worldReply({ action: 'status' }, []) }),
   });
-  await assert.rejects(f.api.newsRequest({ action: 'list' }), { code: 'bad_reply' });
-  await assert.rejects(f.api.newsRequest({ action: 'report', fieldId: defaultNewsField.id, cutoff: '2026-10-12T00:00:00.000Z' }), { code: 'bad_reply' });
-  await assert.rejects(f.api.worldRequest({ action: 'list' }), { code: 'bad_reply' });
-  await assert.rejects(f.api.worldRequest({ action: 'detail', id: 'wanted' }), { code: 'bad_reply' });
+  await assert.rejects(f.clients.cards.newsRequest({ action: 'list' }), { code: 'bad_reply' });
+  await assert.rejects(f.clients.cards.newsRequest({ action: 'report', fieldId: defaultNewsField.id, cutoff: '2026-10-12T00:00:00.000Z' }), { code: 'bad_reply' });
+  await assert.rejects(f.clients['model-world'].worldRequest({ action: 'list' }), { code: 'bad_reply' });
+  await assert.rejects(f.clients['model-world'].worldRequest({ action: 'detail', id: 'wanted' }), { code: 'bad_reply' });
   const bad = await fixture({ world: async input => ({ ok: true, value: worldReply(input, [worldModel('one')], { attributions: [{ ...worldAttributions[0], url: 'javascript:alert(1)' }, ...worldAttributions.slice(1)] }) }) });
-  await assert.rejects(bad.api.worldRequest({ action: 'list' }), { code: 'bad_reply' });
+  await assert.rejects(bad.clients['model-world'].worldRequest({ action: 'list' }), { code: 'bad_reply' });
 });
 
 
@@ -657,19 +472,20 @@ test('工具台和AI网页按最终导航顺序稳定挂载，切换与刷新不
   const first = f.render();
   const nav = nodes(first).find(node => node.type === 'nav');
   assert.deepEqual(nodes(nav).filter(node => node.type === 'button').map(node => node.props.children[0]), ['专家团队', 'AI 网页', '个人知识', '技能成长', '定时任务', '工具台', '知识卡片', '模型世界']);
-  const toolbox = nodes(first).find(node => node.type?.name === 'ToolboxView');
-  const ai = nodes(first).find(node => node.type?.name === 'AiWebView');
-  assert.equal(toolbox.props.active, false); assert.equal(ai.props.active, false);
+  assert.equal(nodes(first).some(node => ['ToolboxView', 'AiWebView'].includes(node.type?.name)), false);
+  const opened = new Map();
   const calls = f.calls.length;
+  // 保活从首次主动打开开始；隐藏实例保留同一组件与 key，未登记刷新不制造空操作。
   for (const [label, name] of [['工具台', 'ToolboxView'], ['AI 网页', 'AiWebView'], ['工具台', 'ToolboxView']]) {
-    await button(f.render(), label).props.onClick();
-    const tree = f.render();
-    for (const original of [toolbox, ai]) {
+    await button(f.render(), label).props.onClick(); await settleView(f);
+    const tree = f.render(), current = nodes(tree).find(node => node.type?.name === name);
+    if (!opened.has(name)) opened.set(name, current);
+    for (const original of opened.values()) {
       const view = nodes(tree).find(node => node.type === original.type);
       assert.ok(view); assert.equal(view.props.key, original.props.key);
       assert.equal(view.props.active, view.type.name === name);
     }
-    await button(f.render(), '刷新').props.onClick();
+    assert.equal(nodes(tree).some(node => node.type === 'button' && node.props.children.includes('刷新')), false);
   }
   assert.equal(f.calls.length, calls); assert.equal(f.storage.size, 0);
 });
@@ -697,10 +513,10 @@ const aiOpen = f => nodes(f.render()).find(node => node.type?.name === 'AiWebVie
 test('中性工作台flush未知保留原身份，重试只重新确认；已认领旧会话不重建改模式', async () => {
   let fail = true;
   const f = await fixture({ confirmWorkbench: async () => fail ? { ok: true, value: { result: { kind: 'error', text: JSON.stringify({ code: 'PERSISTENCE', message: '尚未持久化' }) } } } : success({ action: 'workbench_confirm', persisted: true }) });
-  await assert.rejects(f.api.ensureWorkbench(), /没能确认结果/); const id = f.calls.find(call => call[0] === 'create')[1].sessionId;
-  fail = false; assert.equal(await f.api.ensureWorkbench(), id);
+  await assert.rejects(f.workbenchSession.ensureWorkbench(), /没能确认结果/); const id = f.calls.find(call => call[0] === 'create')[1].sessionId;
+  fail = false; assert.equal(await f.workbenchSession.ensureWorkbench(), id);
   assert.equal(f.calls.filter(call => call[0] === 'create').length, 1); assert.equal(f.calls.filter(call => call[0] === 'claim').length, 1); assert.equal(f.calls.filter(call => call[0] === 'confirm').length, 2);
-  const reused = await fixture({ storage: f.storage, existing: f.existing }); assert.equal(await reused.api.ensureWorkbench(), id);
+  const reused = await fixture({ storage: f.storage, existing: f.existing }); assert.equal(await reused.workbenchSession.ensureWorkbench(), id);
   assert.equal(reused.calls.some(call => ['create', 'claim', 'confirm'].includes(call[0])), false);
 });
 
@@ -795,23 +611,23 @@ test('AI网页浏览器类型未注册时公开查询显示缺服务，不准备
 test('AI网页API只向准确mounted会话交付，缺失或换身份不补发', async () => {
   let mounted = 'session-one'; const opened = [];
   const f = await fixture({ sidebarRight: { mounted: { getSnapshot: () => mounted }, openTab: (...args) => opened.push(args) } });
-  await f.api.openBrowser('https://chat.deepseek.com/', 'session-one');
+  await f.clients['ai-web'].openBrowser('https://chat.deepseek.com/', 'session-one');
   assert.deepEqual(opened, [['browser', { params: { url: 'https://chat.deepseek.com/' } }]]);
-  mounted = 'other'; await assert.rejects(f.api.openBrowser('https://chat.deepseek.com/', 'session-one'), /浏览器/);
+  mounted = 'other'; await assert.rejects(f.clients['ai-web'].openBrowser('https://chat.deepseek.com/', 'session-one'), /浏览器/);
   assert.equal(opened.length, 1);
 });
 
 test('同一个AI只占一个网页标签：已开着就切回去，被关掉后才新开', async () => {
   const tabs = [], opened = [], focused = [];
   const f = await fixture({ sidebarRight: { mounted: { getSnapshot: () => 'session-one' }, tabsIn: () => tabs.map(id => ({ id, kind: 'browser' })), focus: id => focused.push(id), openTab: (...args) => { opened.push(args); tabs.push(`tab-${opened.length}`); } } });
-  await f.api.openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
-  await f.api.openBrowser('https://www.kimi.com/', 'session-one', 'kimi');
-  await f.api.openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
+  await f.clients['ai-web'].openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
+  await f.clients['ai-web'].openBrowser('https://www.kimi.com/', 'session-one', 'kimi');
+  await f.clients['ai-web'].openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
   assert.equal(opened.length, 2); assert.deepEqual(focused, ['tab-1']);
   tabs.splice(0, 1);
-  await f.api.openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
+  await f.clients['ai-web'].openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
   assert.equal(opened.length, 3); assert.deepEqual(focused, ['tab-1']);
-  await f.api.openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
+  await f.clients['ai-web'].openBrowser('https://chat.deepseek.com/', 'session-one', 'deepseek');
   assert.deepEqual(focused, ['tab-1', 'tab-3']);
 });
 
@@ -844,7 +660,7 @@ test('定时默认模板与组件缺失帮助不创建会话、不读取知识�
     assert.deepEqual(f.calls, [['automation', { action: 'catalog' }]]);
     assert.equal(f.storage.size, 0);
     assert.equal(nodes(f.render()).some(node => node.props.children.includes('允许沉淀的会话')), false);
-    if (!available) assert.ok(nodes(f.render()).some(node => node.props.children.some(value => typeof value === 'string' && value.includes('「定时任务」并打开开关'))));
+    if (!available) assert.ok(nodes(f.render()).some(node => node.props.children.some(value => typeof value === 'string' && value.includes('新版请检查 DSH 启动日志并重启'))));
   }
 });
 
@@ -877,7 +693,7 @@ test('定时自建表单完整适配六种时间选择，standard独立会话先
     assert.equal(f.calls.filter(([kind]) => kind === 'create').length, 1);
     assert.ok(f.calls.findIndex(([kind]) => kind === 'automationClaim') < f.calls.findIndex(([kind, input]) => kind === 'automation' && input.action === 'create'));
     assert.equal(f.calls.some(([kind]) => ['expert', 'knowledge', 'prompt'].includes(kind)), false);
-    assert.equal(f.api.pendingAutomation(), null); assert.equal(f.storage.size, 0);
+    assert.equal(f.clients.automation.pendingAutomation(), null); assert.equal(f.storage.size, 0);
   }
 });
 
@@ -912,15 +728,15 @@ test('定时创建回执未知只保存身份，刷新和重载回读已接受�
   };
   const f = await fixture({ automation });
   const draft = { purpose: 'custom', cwd: 'E:\\不应缓存的工程', spec: { title: '私人标题', prompt: '不应缓存的工作原文', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } } };
-  await assert.rejects(f.api.createAutomation(draft, false), /创建回执丢失/);
-  const pending = f.api.pendingAutomation();
+  await assert.rejects(f.clients.automation.createAutomation(draft, false), /创建回执丢失/);
+  const pending = f.clients.automation.pendingAutomation();
   assert.deepEqual([...f.storage.values()], [JSON.stringify({ sessionId: pending.sessionId, purpose: 'custom' })]);
-  await assert.rejects(f.api.createAutomation(draft, false), { code: 'automation_pending' });
-  const resumed = await fixture({ automation, storage: f.storage, existing: f.existing, automationClaims: f.automationClaims });
+  await assert.rejects(f.clients.automation.createAutomation(draft, false), { code: 'automation_pending' });
+  const resumed = await fixture({ automation, storage: f.storage, existing: f.existing, automationClaims: f.automationClaims, workspaceState: f.ctx.workspaces.list.getSnapshot() });
   await button(resumed.render(), '定时任务').props.onClick();
   assert.ok(button(resumed.render(), '查看原会话和计划'));
   await button(resumed.render(), '查看原会话和计划').props.onClick();
-  assert.equal(resumed.api.pendingAutomation(), null);
+  assert.equal(resumed.clients.automation.pendingAutomation(), null);
   assert.equal(resumed.calls.some(([kind, input]) => kind === 'create' || kind === 'automation' && input.action === 'create'), false);
   assert.equal(resumed.storage.size, 0);
 });
@@ -935,29 +751,30 @@ test('定时未接受计划重载后重新填写并明确继续，复用同一�
     return { ok: true, value: { task: record, recovered: false } };
   };
   const f = await fixture({ automation });
-  await assert.rejects(f.api.createAutomation({ purpose: 'custom', cwd: 'E:\\工作', spec: { title: '旧稿', prompt: '旧稿正文', after_seconds: 60 } }, false), /模型配置缺失/);
-  const id = f.api.pendingAutomation().sessionId;
+  await assert.rejects(f.clients.automation.createAutomation({ purpose: 'custom', cwd: 'E:\\工作', spec: { title: '旧稿', prompt: '旧稿正文', after_seconds: 60 } }, false), /模型配置缺失/);
+  const id = f.clients.automation.pendingAutomation().sessionId;
   failed = false;
-  const resumed = await fixture({ automation, storage: f.storage, existing: f.existing, automationClaims: f.automationClaims });
+  const resumed = await fixture({ automation, storage: f.storage, existing: f.existing, automationClaims: f.automationClaims, workspaceState: f.ctx.workspaces.list.getSnapshot() });
   await button(resumed.render(), '定时任务').props.onClick(); await button(resumed.render(), '查看原会话和计划').props.onClick();
   assert.equal(resumed.calls.some(([kind]) => kind === 'create'), false);
   button(resumed.render(), '继续编辑草稿').props.onClick();
   assert.equal(taskField(resumed, '工作指令').props.value, '');
   taskField(resumed, '任务名称', '重新填写'); taskField(resumed, '工作指令', '明确重新提交');
   await button(resumed.render(), '继续原会话创建').props.onClick();
-  assert.equal(resumed.calls.find(([kind]) => kind === 'create')[1].sessionId, id);
+  assert.equal(resumed.calls.some(([kind]) => kind === 'create'), false);
+  assert.equal(resumed.calls.find(([kind]) => kind === 'automationClaim')[1], id);
   assert.equal(resumed.calls.filter(([kind, input]) => kind === 'automation' && input.action === 'create').length, 1);
-  assert.equal(resumed.api.pendingAutomation(), null);
+  assert.equal(resumed.clients.automation.pendingAutomation(), null);
 });
 
 test('定时创建期间取消保留原身份，迟到会话回执不继续claim或投递', async () => {
   const started = Promise.withResolvers(), release = Promise.withResolvers();
   const f = await fixture({ create: async request => { started.resolve(request); await release.promise; return { ok: true, value: { sessionId: request.sessionId, agentPreset: 'standard' } }; } });
   const controller = new AbortController();
-  const pending = f.api.createAutomation({ purpose: 'custom', cwd: 'E:\\工作', spec: { title: '检查', prompt: '检查目录', after_seconds: 60 } }, false, controller.signal);
+  const pending = f.clients.automation.createAutomation({ purpose: 'custom', cwd: 'E:\\工作', spec: { title: '检查', prompt: '检查目录', after_seconds: 60 } }, false, controller.signal);
   const rejected = assert.rejects(pending, /用户取消/);
   const created = await started.promise; controller.abort(new Error('用户取消')); release.resolve(); await rejected;
-  assert.equal(f.api.pendingAutomation().sessionId, created.sessionId);
+  assert.equal(f.clients.automation.pendingAutomation().sessionId, created.sessionId);
   assert.equal(f.calls.some(([kind, input]) => kind === 'automationClaim' || kind === 'automation' && input.action === 'create'), false);
 });
 
@@ -1075,7 +892,7 @@ test('定时输入和返回遵守独立严格schema，坏目录响应不清空�
   assert.ok(button(f.render(), '编辑计划'));
   assert.ok(nodes(f.render()).some(node => node.props.role === 'alert' && node.props.children.includes('插件收到的结果不完整，请重试')));
   const count = f.calls.length;
-  await assert.rejects(f.api.automationRequest({ action: 'create', purpose: 'knowledge', sessionId: 'x', spec: { title: '越权标题', prompt: '越权指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } } }));
+  await assert.rejects(f.clients.automation.automationRequest({ action: 'create', purpose: 'knowledge', sessionId: 'x', spec: { title: '越权标题', prompt: '越权指令', daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' } } }));
   assert.equal(f.calls.length, count);
 });
 
@@ -1098,41 +915,41 @@ test('定时草稿跨标签和收起保留，放弃需确认且不生成任务',
 test('定时原生会话回执丢失与坏恢复缓存不触发第二身份或其他渠道', async () => {
   const f = await fixture({ create: async () => { throw new Error('会话接受状态未知'); } });
   const draft = { purpose: 'custom', cwd: 'E:\\任务', spec: { title: '任务', prompt: '任务正文', after_seconds: 60 } };
-  await assert.rejects(f.api.createAutomation(draft, false), /会话接受状态未知/);
-  const identity = f.api.pendingAutomation().sessionId;
-  await assert.rejects(f.api.createAutomation(draft, false), { code: 'automation_pending' });
-  assert.equal(f.api.pendingAutomation().sessionId, identity);
+  await assert.rejects(f.clients.automation.createAutomation(draft, false), /会话接受状态未知/);
+  const identity = f.clients.automation.pendingAutomation().sessionId;
+  await assert.rejects(f.clients.automation.createAutomation(draft, false), { code: 'automation_pending' });
+  assert.equal(f.clients.automation.pendingAutomation().sessionId, identity);
   const cache = new Map([['whalewing:automation-pending:http://fixture.local', '{bad']]);
   const corrupt = await fixture({ storage: cache });
   await button(corrupt.render(), '定时任务').props.onClick();
   assert.equal(button(corrupt.render(), '新增定时任务').props.disabled, true);
-  await assert.rejects(corrupt.api.createAutomation(draft, false), { code: 'automation_cache' });
+  await assert.rejects(corrupt.clients.automation.createAutomation(draft, false), { code: 'automation_cache' });
   assert.equal(corrupt.calls.some(([kind]) => kind === 'create'), false);
 });
 
-test('工厂独立串行化且只注册原生 slots，纯渲染不创建会话', async () => {
+test('真实模块工厂注册宿主和工作台 slots，纯渲染不创建会话', async () => {
   const f = await fixture();
-  assert.deepEqual([...f.entries.keys()], ['sidebar.panellist', 'main', 'browser.toolbar.actions', 'conversation.session.header.actions', 'conversation.input.left', 'conversation.hero.actions', 'whalewing.assistant.conversation', 'shell.overlay']);
+  assert.deepEqual([...f.entries.keys()].sort(), ['sidebar.panellist', 'main', 'whalewing.workbench.tab', 'whalewing.workbench.dock', 'browser.toolbar.actions', 'conversation.session.header.actions', 'conversation.input.left', 'conversation.hero.actions', 'whalewing.assistant.conversation', 'shell.overlay', 'plugins.detail.section'].sort());
   assert.equal(typeof f.entries.get('browser.toolbar.actions').Component, 'function');
   assert.equal(f.entries.get('browser.toolbar.actions').options.id, 'whalewing-ai-picker');
   assert.equal(f.entries.get('main').options.key, 'whalewing');
   assert.equal(f.entries.get('sidebar.panellist').options.id, 'whalewing');
   f.render();
   assert.deepEqual(f.calls, []);
-  assert.equal(f.dictionaries.size, 1);
+  assert.equal(f.dictionaries.size, 2);
   f.disposed.forEach((dispose) => dispose());
   assert.equal(f.dictionaries.size, 0);
 });
 
 test('统一知识请求遵循真实命令与嵌套结果契约', async () => {
   const f = await fixture({ execute: async (...args) => { f.calls.push(args); return success({ notes: [], truncated: false }); } });
-  assert.deepEqual(await f.api.request('session-1', { action: 'search', query: '中文' }), { notes: [], truncated: false });
+  assert.deepEqual(await f.bridge.request('session-1', { action: 'search', query: '中文' }), { notes: [], truncated: false });
   assert.deepEqual(f.calls[0], ['session-1', '/whalewing {"action":"search","query":"中文"}', []]);
 });
 
 test('未选择会话时阻断请求且不隐式创建', async () => {
   const f = await fixture();
-  await assert.rejects(f.api.request('', { action: 'status' }), { code: 'session_required' });
+  await assert.rejects(f.bridge.request('', { action: 'status' }), { code: 'session_required' });
   assert.deepEqual(f.calls, []);
 });
 
@@ -1143,18 +960,18 @@ test('Remote、命令缺失与畸形响应均保留失败', async () => {
     [{ ok: true, value: { result: { kind: 'success', text: '<html>' } } }, 'bad_reply'],
   ]) {
     const f = await fixture({ execute: async () => reply });
-    await assert.rejects(f.api.request('s', { action: 'status' }), { code: expected });
+    await assert.rejects(f.bridge.request('s', { action: 'status' }), { code: expected });
   }
 });
 
 test('Host 内容冲突代码穿透到编辑器而不伪装成功', async () => {
   const f = await fixture({ execute: async () => ({ ok: true, value: { result: { kind: 'error', text: JSON.stringify({ code: 'conflict', message: '内容已修改' }) } } }) });
-  await assert.rejects(f.api.request('s', { action: 'write' }), { code: 'conflict', detail: '内容已修改', message: shown('conflict', '内容已修改') });
+  await assert.rejects(f.bridge.request('s', { action: 'write' }), { code: 'conflict', detail: '内容已修改', message: shown('conflict', '内容已修改') });
 });
 
 test('专家选择独立于模式，创建优先使用工程路径', async () => {
   const f = await fixture();
-  assert.equal(await f.api.createExpert('development', { cwd: ' E:\\工程 ', workspaceId: 'w1' }), 'new-session');
+  assert.equal(await f.clients.experts.createExpert('development', { cwd: ' E:\\工程 ', workspaceId: 'w1' }), 'new-session');
   assert.deepEqual(f.workspaceCalls, [['create', 'E:\\工程']]);
   assert.deepEqual(f.calls[0], ['create', { workspaceId: 'workspace-2' }]);
   assert.ok(!f.calls.some(([kind]) => kind === 'open'));
@@ -1162,8 +979,8 @@ test('专家选择独立于模式，创建优先使用工程路径', async () =>
 
 test('新建支持已选工作区和宿主默认位置，不传已有会话身份', async () => {
   const f = await fixture();
-  await f.api.createExpert('manager', { workspaceId: 'workspace-1' });
-  await f.api.createExpert('manager');
+  await f.clients.experts.createExpert('manager', { workspaceId: 'workspace-1' });
+  await f.clients.experts.createExpert('manager');
   assert.deepEqual(f.calls.filter(([kind]) => kind === 'create'), [
     ['create', { workspaceId: 'workspace-1' }],
     ['create', { workspaceId: 'default-workspace' }],
@@ -1172,15 +989,15 @@ test('新建支持已选工作区和宿主默认位置，不传已有会话身�
 
 test('未知角色和相对路径在提交前阻断', async () => {
   const f = await fixture();
-  await assert.rejects(f.api.createExpert('unknown'), { code: 'role_missing' });
-  await assert.rejects(f.api.createExpert('manager', { cwd: '../secret' }), { code: 'invalid_path' });
+  await assert.rejects(f.clients.experts.createExpert('unknown'), { code: 'role_missing' });
+  await assert.rejects(f.clients.experts.createExpert('manager', { cwd: '../secret' }), { code: 'invalid_path' });
   assert.deepEqual(f.calls, []);
 });
 
 test('未登记默认工作区时由Host关联当前会话，不二次创建或选择首个客户工程', async () => {
   const workspaceState = { items: [{ workspaceId: 'customer', path: 'E:\\客户项目', sessionIds: [] }] };
   const f = await fixture({ workspaceState, initializeDefault: async () => undefined });
-  const id = await f.api.createExpert('manager', { mode: 'cordis' });
+  const id = await f.clients.experts.createExpert('manager', { mode: 'cordis' });
   assert.equal(id, 'new-session');
   assert.deepEqual(f.calls.filter(([kind]) => kind === 'create'), [
     ['create', { agentPreset: 'cordis' }],
@@ -1193,20 +1010,20 @@ test('未登记默认工作区时由Host关联当前会话，不二次创建或�
 
 test('知识工作台与专家共用默认位置关联，重开旧工作台不创建新身份', async () => {
   const f = await fixture({ workspaceState: { items: [] }, initializeDefault: async () => undefined });
-  const id = await f.api.ensureWorkbench();
+  const id = await f.workbenchSession.ensureWorkbench();
   const creates = f.calls.filter(([kind]) => kind === 'create');
   assert.equal(creates.length, 1);
   assert.ok(creates.every(([, input]) => input.sessionId === id));
   assert.deepEqual(f.workspaceState.items[0].sessionIds, [id]);
   const resumed = await fixture({ storage: f.storage, existing: f.existing, workspaceState: { items: [] } });
-  assert.equal(await resumed.api.ensureWorkbench(), id);
+  assert.equal(await resumed.workbenchSession.ensureWorkbench(), id);
   assert.deepEqual(resumed.calls.filter(([kind]) => kind === 'create'), []);
   assert.deepEqual(resumed.calls.filter(([kind]) => kind === 'attach'), [['attach', id, { action: 'workspace_attach' }]]);
 });
 
 test('工作区注册前失败不创建会话，创建后关联失败保留身份和打开入口', async () => {
   const unavailable = await fixture({ createWorkspace: async () => { throw new Error('目录不可访问'); } });
-  await assert.rejects(unavailable.api.createExpert('manager', { cwd: 'E:\\工程' }), /目录不可访问/);
+  await assert.rejects(unavailable.clients.experts.createExpert('manager', { cwd: 'E:\\工程' }), /目录不可访问/);
   assert.equal(unavailable.calls.some(([kind]) => kind === 'create'), false);
   const f = await fixture({ initializeDefault: async () => undefined, attach: async () => { throw new Error('工作区关联失败'); } });
   await button(f.render(), '开始新任务').props.onClick();
@@ -1219,10 +1036,10 @@ test('工作区注册前失败不创建会话，创建后关联失败保留身�
 
 test('关联错误中的宿主已创建身份穿透，错误关联回执保留身份且不二次创建', async () => {
   const failed = await fixture({ create: async () => ({ ok: false, error: { code: 'session/workspace-attach-failed', message: '关联失败', details: { sessionId: 'accepted-id' } } }) });
-  await assert.rejects(failed.api.createExpert('manager'), { code: 'session/workspace-attach-failed', sessionId: 'accepted-id' });
+  await assert.rejects(failed.clients.experts.createExpert('manager'), { code: 'session/workspace-attach-failed', sessionId: 'accepted-id' });
   for (const reply of [{ sessionId: 'other', workspaceId: 'w' }, { sessionId: 'new-session' }]) {
     const malformed = await fixture({ initializeDefault: async () => undefined, attach: async () => success(reply) });
-    await assert.rejects(malformed.api.createExpert('manager'), { code: 'bad_reply', sessionId: 'new-session' });
+    await assert.rejects(malformed.clients.experts.createExpert('manager'), { code: 'bad_reply', sessionId: 'new-session' });
     assert.equal(malformed.calls.filter(([kind]) => kind === 'create').length, 1);
   }
 });
@@ -1252,32 +1069,32 @@ test('知识页不受旧工作台未认领或会话服务失败阻塞，取消�
 
 test('讨论仅写原生草稿，提交忙时保留现状，重试复用会话且重复点击不追加', async () => {
   const f = await fixture();
-  const id = await f.api.ensureAssistant(); const reference = f.api.retain(id);
-  const unmountInput = f.api.mountAssistantInput(id);
+  const id = await f.clients.assistant.ensureAssistant(); const reference = f.bridge.retain(id);
+  const unmountInput = f.clients.assistant.mountAssistantInput(id);
   const input = f.inputFor(id); const original = { ...input.state.getSnapshot(), draft: '我的问题', phase: 'submitting', occurrences: [{ source: 'notes', ref: 'a.md' }] };
   input.state.set(original);
-  await assert.rejects(f.api.proposeDiscussion(reference, '讨论提议'), { code: 'draft_insert_rejected' });
+  await assert.rejects(f.clients.assistant.proposeDiscussion(reference, '讨论提议'), { code: 'draft_insert_rejected' });
   assert.equal(input.state.getSnapshot(), original);
   input.state.set({ ...original, phase: 'plain' });
-  await f.api.proposeDiscussion(reference, '讨论提议'); await f.api.proposeDiscussion(reference, '讨论提议');
+  await f.clients.assistant.proposeDiscussion(reference, '讨论提议'); await f.clients.assistant.proposeDiscussion(reference, '讨论提议');
   assert.equal(input.inserts.length, 1); assert.match(input.state.getSnapshot().draft, /^我的问题\n\n讨论提议/);
   assert.equal(input.state.getSnapshot().occurrences, original.occurrences);
   assert.equal(f.calls.filter(([kind]) => kind === 'create').length, 1);
   assert.equal(f.calls.filter(([kind]) => kind === 'knowledge' || kind === 'prompt').length, 0);
   assert.equal(f.calls.some(([kind]) => kind === 'open'), false);
-  assert.equal(f.api.ask, undefined); unmountInput(); reference.release();
+  assert.equal(f.clients.assistant.ask, undefined); unmountInput(); reference.release();
 });
 
 test('资料预检失败不创建会话，讨论准备失败保留同一助手身份恢复且零发送', async () => {
   const missing = await fixture({ knowledge: async () => ({ ok: false, error: { code: 'NOT_FOUND', message: '来源已删除' } }) });
-  await assert.rejects(missing.api.knowledge({ action: 'question', question: '问题', paths: ['40-知识/缺失.md'] }), { code: 'NOT_FOUND' });
+  await assert.rejects(missing.clients.knowledge.knowledge({ action: 'question', question: '问题', paths: ['40-知识/缺失.md'] }), { code: 'NOT_FOUND' });
   assert.equal(missing.calls.some(([kind]) => kind === 'create'), false);
   let blocked = true;
   const f = await fixture({ knowledge: async () => ({ ok: true, value: { prompt: '来源原文', sources: [] } }), expertExecute: async () => blocked ? { ok: false, error: { code: 'BUSY', message: '会话忙' } } : success({ expertId: 'manager' }) });
   let id;
-  await assert.rejects(f.api.ensureAssistant(), error => { id = error.sessionId; return error.code === 'BUSY'; });
+  await assert.rejects(f.clients.assistant.ensureAssistant(), error => { id = error.sessionId; return error.code === 'BUSY'; });
   blocked = false;
-  assert.equal(await f.api.ensureAssistant(), id);
+  assert.equal(await f.clients.assistant.ensureAssistant(), id);
   assert.equal(f.calls.filter(([kind]) => kind === 'create').length, 1);
   assert.equal(f.calls.filter(([kind]) => kind === 'prompt').length, 0);
 });
@@ -1285,7 +1102,7 @@ test('资料预检失败不创建会话，讨论准备失败保留同一助手�
 test('专家卡默认不登记知识来源，成功后进入原生主会话', async () => {
   const f = await fixture();
   await button(f.render(), '开始新任务').props.onClick();
-  assert.deepEqual(f.calls, [['create', { workspaceId: 'default-workspace' }], ['expert', 'new-session', { expertId: 'manager' }], ['projections', 'new-session'], ['projections', 'new-session'], ['open', 'new-session']]);
+  assert.deepEqual(f.calls, [['create', { workspaceId: 'default-workspace' }], ['projections', 'new-session'], ['expert', 'new-session', { expertId: 'manager' }], ['projections', 'new-session'], ['projections', 'new-session'], ['open', 'new-session']]);
 });
 
 test('重复点击 pending 创建按钮不会创建第二个会话', async () => {
@@ -1472,7 +1289,7 @@ test('官方无名模式复用宿主词典，自定义名称和未知模式保�
     modes: async () => ({ ok: true, value: { presets } }),
   });
   const expected = ['标准模式', 'PTC 本地化', '极简本地化', '创造模式', '团队模式', '', 'custom'];
-  assert.deepEqual((await f.api.modes()).map((item) => item.name), expected);
+  assert.deepEqual((await f.bridge.modes()).map((item) => item.name), expected);
   await button(f.render(), '刷新').props.onClick();
   const select = nodes(f.render()).find((node) => node.type === 'select' && node.props['aria-label'] === 'DSH 模式');
   assert.deepEqual(nodes(select).filter((node) => node.type === 'option').slice(1).map((node) => node.props.children[0]), expected);
@@ -1522,10 +1339,10 @@ test('创建后专家选择失败保留实际任务ID和打开入口，不虚报
 
 test('专用工作台只创建一次，跨标签和页面实例依靠正式投影复用', async () => {
   const f = await fixture();
-  const pending = f.api.ensureWorkbench();
-  assert.equal(f.api.ensureWorkbench(), pending);
+  const pending = f.workbenchSession.ensureWorkbench();
+  assert.equal(f.workbenchSession.ensureWorkbench(), pending);
   const id = await pending;
-  assert.equal(await f.api.ensureWorkbench(), id);
+  assert.equal(await f.workbenchSession.ensureWorkbench(), id);
   await button(f.render(), '个人知识').props.onClick();
   await button(f.render(), '技能成长').props.onClick();
   await button(f.render(), '定时任务').props.onClick();
@@ -1533,31 +1350,33 @@ test('专用工作台只创建一次，跨标签和页面实例依靠正式投�
   assert.equal(f.calls.some(([kind]) => kind === 'expert' || kind === 'open'), false);
   assert.equal(f.calls.some((entry) => JSON.stringify(entry).includes('source_add')), false);
   const resumed = await fixture({ storage: f.storage, existing: f.existing });
-  assert.equal(await resumed.api.ensureWorkbench(), id);
-  assert.deepEqual(resumed.calls, [['projections', id]]);
+  assert.equal(await resumed.workbenchSession.ensureWorkbench(), id);
+  assert.deepEqual(resumed.calls, [['projections', id], ['lookup', id]]);
 });
 
-test('工作台缓存按origin隔离，远端不存在时明确创建，读取错误不创建', async () => {
+test('工作台缓存按origin隔离，未知接纳空读保留原ID且不重发，读取错误不创建', async () => {
   const key = 'whalewing:workbench:http://fixture.local';
   const storage = new Map([[key, 'missing-workbench']]);
   const missing = await fixture({ storage });
-  assert.equal(await missing.api.ensureWorkbench(), 'missing-workbench');
-  assert.equal(missing.calls.filter(([kind]) => kind === 'create').length, 1);
+  await assert.rejects(missing.workbenchSession.ensureWorkbench(), { code: 'SESSION_UNCONFIRMED' });
+  await assert.rejects(missing.workbenchSession.ensureWorkbench(), { code: 'SESSION_UNCONFIRMED' });
+  assert.equal(storage.get(key), 'missing-workbench');
+  assert.equal(missing.calls.filter(([kind]) => kind === 'create').length, 0);
   const other = await fixture({ storage, existing: missing.existing, origin: 'http://other.local' });
-  assert.notEqual(await other.api.ensureWorkbench(), 'missing-workbench');
+  assert.notEqual(await other.workbenchSession.ensureWorkbench(), 'missing-workbench');
   const offline = await fixture({ storage, projections: async () => ({ ok: false, error: { code: 'offline', message: '连接中断' } }) });
-  await assert.rejects(offline.api.ensureWorkbench(), { code: 'offline' });
+  await assert.rejects(offline.workbenchSession.ensureWorkbench(), { code: 'offline' });
   assert.equal(offline.calls.some(([kind]) => kind === 'create'), false);
 });
 
 test('中断后未认领缓存不抢用户会话，显式重新准备保留旧会话', async () => {
   const key = 'whalewing:workbench:http://fixture.local';
   const f = await fixture({ storage: new Map([[key, 'interrupted-session']]), existing: new Map([['interrupted-session', false]]) });
-  await assert.rejects(f.api.ensureWorkbench(), { code: 'workbench_identity' });
+  await assert.rejects(f.workbenchSession.ensureWorkbench(), { code: 'workbench_identity' });
   assert.deepEqual(f.calls, [['projections', 'interrupted-session']]);
-  f.api.open('interrupted-session');
+  f.bridge.open('interrupted-session');
   assert.deepEqual(f.calls.at(-1), ['open', 'interrupted-session']);
-  await f.api.restartWorkbench();
+  await f.workbenchSession.restartWorkbench();
   assert.notEqual(f.storage.get(key), 'interrupted-session');
   assert.equal(f.existing.get('interrupted-session'), false);
   assert.equal(f.calls.some(([kind, request]) => kind === 'rename' && request.sessionId === 'interrupted-session'), false);
@@ -1596,6 +1415,7 @@ test('切标签和刷新不会丢弃知识草稿', async () => {
 
 test('原生slot专家选择显示名字职责，切换与清除均不改模式', async () => {
   const f = await fixture();
+  f.existing.set('bound-session', false);
   const props = { sessionId: 'bound-session', useProjection: () => ({ expertId: 'development' }), useSessions: select => select({ byId: {} }) };
   const slot = 'conversation.session.header.actions';
   let tree = f.render(slot, props);
@@ -1604,7 +1424,7 @@ test('原生slot专家选择显示名字职责，切换与清除均不改模式'
   const choice = nodes(tree).find(node => node.type === 'button' && nodes(node).some(child => child.type === 'strong' && child.props.children.includes('小鲸助手')));
   await choice.props.onClick();
   await button(f.render(slot, props), '不使用专家').props.onClick();
-  assert.deepEqual(f.calls, [['expert', 'bound-session', { expertId: 'manager' }], ['projections', 'bound-session'], ['projections', 'bound-session'], ['expert', 'bound-session', { expertId: null }], ['projections', 'bound-session']]);
+  assert.deepEqual(f.calls, [['projections', 'bound-session'], ['expert', 'bound-session', { expertId: 'manager' }], ['projections', 'bound-session'], ['projections', 'bound-session'], ['projections', 'bound-session'], ['expert', 'bound-session', { expertId: null }], ['projections', 'bound-session']]);
 });
 
 test('新专家入口注册hero actions，保留原生模式且退出错误的input dock', async () => {
@@ -1646,6 +1466,7 @@ test('未知或非本插件模式不被判为历史专家，新专家仍由whale
 
 test('专家选择失败保留原投影和错误，卸载后的响应不打开会话', async () => {
   const f = await fixture({ expertExecute: async () => ({ ok: false, error: { code: 'busy', message: '当前回合进行中' } }) });
+  f.existing.set('s', false);
   const slot = 'conversation.session.header.actions';
   const props = { sessionId: 's', useProjection: () => ({ expertId: 'development' }), useSessions: (select) => select({ byId: {} }) };
   const choice = nodes(f.render(slot, props)).find(node => node.type === 'button' && nodes(node).some(child => child.type === 'strong' && child.props.children.includes('小鲸助手')));
@@ -1803,7 +1624,7 @@ test('原生资料chip只投递到助手当前scope，实际序列化复用quest
   const f = await fixture({ knowledge: async (input, signal) => { received.push({ input, signal }); return { ok: true, value: { prompt: '真实资料正文', sources: [{ absolutePath: 'E:/员工知识/40-知识/原文.md' }] } }; } });
   const scoped = { bail(subject, event, payload) { assert.equal(subject, scoped); assert.equal(event, 'slash/input-insert-reference'); received.push(payload); return true; } };
   f.ctx.sessions.binding = id => id === 'assistant' ? { ctx: scoped } : undefined;
-  f.api.setAssistantContext('assistant', ['40-知识/原文.md']);
+  f.clients.assistant.setAssistantContext('assistant', ['40-知识/原文.md']);
   const props = { sessionId: 'assistant', inputActions: { captureInsertion: () => ({ start: 3, end: 3, draftRev: 2 }) } };
   const tree = f.render('conversation.input.left', props);
   await button(tree, '引用所选笔记').props.onClick();
@@ -1824,7 +1645,7 @@ test('原生资料序列化错误不变成空引用，插入被拒绝时保留�
   const f = await fixture({ knowledge: async () => ({ ok: false, error: { code: 'NOT_FOUND', message: '原文已删除' } }) });
   await assert.rejects(f.triggerSources.get('whalewing-knowledge').codec.serialize('["missing.md"]'), { code: 'NOT_FOUND' });
   f.ctx.sessions.binding = () => ({ ctx: { bail: () => false } });
-  f.api.setAssistantContext('a', ['missing.md']);
+  f.clients.assistant.setAssistantContext('a', ['missing.md']);
   const props = { sessionId: 'a', inputActions: { captureInsertion: () => ({ start: 0, end: 0, draftRev: 0 }) } };
   await button(f.render('conversation.input.left', props), '引用所选笔记').props.onClick();
   assert.ok(nodes(f.render('conversation.input.left', props)).some(node => node.props.role === 'alert'));
@@ -1881,11 +1702,11 @@ test('专家模型准备使用Host断言并核对modelSelection.next', async () 
   const selected = { provider: 'fixture', model: 'default' };
   let request;
   f.ctx.remote.whalewingExperts.manage = async input => { request = input; return { ok: true, value: { selected } }; };
-  f.ctx.remote.session.projections = async () => ({ ok: true, value: { values: { modelSelection: { next: selected } } } });
-  await f.api.applyExpertModel('s', roles[0]);
+  f.ctx.remote.session.projections = async () => ({ ok: true, value: { asOfSeq: 0, values: { modelSelection: { next: selected } } } });
+  await f.clients.experts.applyExpertModel('s', roles[0]);
   assert.deepEqual(request, { action: 'prepare_model', sessionId: 's', expertId: 'manager', expectedRevision: 0 });
-  f.ctx.remote.session.projections = async () => ({ ok: true, value: { values: { modelSelection: { next: { provider: 'other', model: 'other' } } } } });
-  await assert.rejects(f.api.applyExpertModel('s', roles[0]), { code: 'model_readback' });
+  f.ctx.remote.session.projections = async () => ({ ok: true, value: { asOfSeq: 0, values: { modelSelection: { next: { provider: 'other', model: 'other' } } } } });
+  await assert.rejects(f.clients.experts.applyExpertModel('s', roles[0]), { code: 'model_readback' });
 });
 
 
@@ -1958,21 +1779,21 @@ for (const type of ['jpeg', 'webp']) test(`新增${type}头像规范化且回执
 
 test('无绑定首页暂存专家仅捕获mainView空白会话，不被助手或子代理消耗', async () => {
   const f = await fixture();
-  await f.api.selectExpert(undefined, 'development');
+  await f.clients.experts.selectExpert(undefined, 'development');
   assert.equal(f.calls.length, 0);
-  assert.equal(f.api.choices().staged.expertId, 'development');
+  assert.equal(f.clients.experts.choices().staged.expertId, 'development');
   f.ctx.sessions.list.set({ byId: { assistant: { id: 'assistant', blank: true, retainedBy: { whalewingAssistant: 1 } }, child: { id: 'child', blank: true, origin: 'subagent', retainedBy: { mainView: 1 } } } });
-  assert.equal(f.api.choices().staged.expertId, 'development');
+  assert.equal(f.clients.experts.choices().staged.expertId, 'development');
   f.existing.set('main', false);
   f.ctx.sessions.list.set({ byId: { main: { id: 'main', blank: true, retainedBy: { mainView: 1 } } } });
-  assert.equal(f.api.choices().staged, null);
-  assert.equal(f.api.choices().sessions.main.expertId, 'development');
-  assert.equal(f.calls.length, 0);
+  assert.equal(f.clients.experts.choices().staged, null);
+  assert.equal(f.clients.experts.choices().sessions.main.expertId, 'development');
+  assert.deepEqual(f.calls, [['projections', 'main']]);
   await f.ctx.sessions.retain('main').binding.session.prompt([{ type: 'text', text: '第一问' }], 'queue', undefined, 'first');
   const kind = f.calls.map(item => item[0]);
   assert.ok(kind.indexOf('expert') < kind.indexOf('prompt'));
   assert.deepEqual(f.calls.find(item => item[0] === 'expert')[2], { expertId: 'development' });
-  assert.equal(f.api.choices().sessions.main, undefined);
+  assert.equal(f.clients.experts.choices().sessions.main, undefined);
 });
 
 test('普通与子代理原生输入不取得专家或模型，已有专家每次发送重新读取当前配置', async () => {
@@ -1983,15 +1804,15 @@ test('普通与子代理原生输入不取得专家或模型，已有专家每�
   f.ctx.sessions.subagentAddress = id => id === 'child' ? { childSessionId: id } : undefined;
   await f.ctx.sessions.retain('child').binding.session.prompt([{ type: 'text', text: '子代理问题' }], 'queue');
   assert.equal(f.calls.some(item => item[0] === 'expert'), false);
-  await assert.rejects(f.api.selectExpert('child', 'manager'), { code: 'expert_subagent' });
+  await assert.rejects(f.clients.experts.selectExpert('child', 'manager'), { code: 'expert_subagent' });
   f.existing.set('expert', false);
-  await f.api.selectExpert('expert', 'manager');
+  await f.clients.experts.selectExpert('expert', 'manager');
   let version = 1;
   let loaded = 0;
   const selected = [];
   f.ctx.remote.whalewingExperts.manage = async input => { if (input.action === 'prepare_model') return f.ctx.remote.session.selectModel({ sessionId: input.sessionId, provider: 'p', model: `m${version}`, saveAsDefault: false }); loaded++; return { ok: true, value: { experts: [{ ...roles[0], revision: version, model: { provider: 'p', model: `m${version}` } }], deleted: [] } }; };
   f.ctx.remote.session.selectModel = async input => { selected.push(input); return { ok: true, value: { selected: input } }; };
-  f.ctx.remote.session.projections = async () => ({ ok: true, value: { values: { whalewingExpert: { expertId: 'manager' }, modelSelection: { next: { provider: 'p', model: `m${version}` } } } } });
+  f.ctx.remote.session.projections = async () => ({ ok: true, value: { asOfSeq: 0, values: { whalewingExpert: { expertId: 'manager' }, modelSelection: { next: { provider: 'p', model: `m${version}` } } } } });
   await f.ctx.sessions.retain('expert').binding.session.prompt([{ type: 'text', text: '第一问' }], 'queue');
   version = 2;
   await f.ctx.sessions.retain('expert').binding.session.prompt([{ type: 'text', text: '第二问' }], 'queue');
@@ -2003,7 +1824,7 @@ test('同一会话并发准备共享模型选择，一个等待者取消不阻�
   const model = { provider: 'p', model: 'm' };
   const f = await fixture({ expertExecute: async () => success({ expertId: 'manager' }) });
   f.ctx.remote.whalewingExperts.manage = async input => input.action === 'prepare_model' ? f.ctx.remote.session.selectModel({ ...model, sessionId: input.sessionId, saveAsDefault: false }) : ({ ok: true, value: { experts: [{ ...roles[0], model }], deleted: [] } });
-  f.ctx.remote.session.projections = async () => ({ ok: true, value: { values: { whalewingExpert: { expertId: 'manager' }, modelSelection: { next: model } } } });
+  f.ctx.remote.session.projections = async () => ({ ok: true, value: { asOfSeq: 0, values: { whalewingExpert: { expertId: 'manager' }, modelSelection: { next: model } } } });
   let complete;
   let started;
   const ready = new Promise(resolve => { started = resolve; });
@@ -2030,7 +1851,7 @@ test('最后等待者取消后晚到模型回执不继续读回或发送问题',
   const f = await fixture({ expertExecute: async () => success({ expertId: 'manager' }) });
   f.ctx.remote.whalewingExperts.manage = async input => input.action === 'prepare_model' ? f.ctx.remote.session.selectModel({ ...model, sessionId: input.sessionId, saveAsDefault: false }) : ({ ok: true, value: { experts: [{ ...roles[0], model }], deleted: [] } });
   let reads = 0;
-  f.ctx.remote.session.projections = async () => { reads++; return { ok: true, value: { values: { whalewingExpert: { expertId: 'manager' }, modelSelection: { next: model } } } }; };
+  f.ctx.remote.session.projections = async () => { reads++; return { ok: true, value: { asOfSeq: 0, values: { whalewingExpert: { expertId: 'manager' }, modelSelection: { next: model } } } }; };
   let complete;
   let started;
   const ready = new Promise(resolve => { started = resolve; });
@@ -2077,14 +1898,14 @@ test('资料chip在已有文字尾部或中间序列化时，两侧均保留原�
 
 test('专家准备读取权威投影，不为每轮只读确认往对话写status命令', async () => {
   const f = await fixture(); f.existing.set('s', false);
-  await f.api.selectExpert('s', 'manager');
+  await f.clients.experts.selectExpert('s', 'manager');
   const native = f.ctx.sessions.retain('s').binding.session;
   await native.prompt([{ type: 'text', text: '第一问' }], 'queue');
   await native.prompt([{ type: 'text', text: '第二问' }], 'queue');
   const commands = f.calls.filter(item => item[0] === 'expert');
   assert.deepEqual(commands, [['expert', 's', { expertId: 'manager' }]]);
-  // 每次还读回一次选模投影；这些读取不追加status命令。
-  assert.equal(f.calls.filter(item => item[0] === 'projections').length, 6);
+  // 首次认领前核验精确投影，每次选模仍独立回读；不追加status命令。
+  assert.equal(f.calls.filter(item => item[0] === 'projections').length, 7);
 });
 
 
@@ -2323,7 +2144,7 @@ test('ready晚到不认领隐藏或已卸载面板，会话换代先释放旧租
   button(a.render(), '收起助手').props.onClick(); await a.tick();
   ready(); await a.tick(); assert.deepEqual(f.presentations, []);
   button(a.render(), '打开小鲸助手').props.onClick(); await a.tick();
-  f.api.ensureAssistant = async () => 'replacement';
+  f.clients.assistant.ensureAssistant = async () => 'replacement';
   await a.start(); await a.tick(); await a.tick();
   assert.deepEqual(f.presentations, [['present', 'whalewing', a.reference.sessionId], ['release', a.reference.sessionId], ['present', 'whalewing', 'replacement']]);
   assert.ok(f.calls.some(item => item[0] === 'release' && item[1] === a.reference.sessionId));
@@ -2434,7 +2255,7 @@ test('内置专家只有编辑和重置，自定义仍可删除，重置确认�
   const confirmation = nodes(f.render()).find(node => node.type === 'dialog' && JSON.stringify(node).includes('恢复这位内置专家的初始配置？'));
   await button(confirmation, '重置为初始配置').props.onClick();
   assert.deepEqual(changes, [{ action: 'restore', id: 'manager', expectedRevision: 0 }]);
-  assert.equal(f.api.experts().experts.find(item => item.id === 'manager').revision, 1);
+  assert.equal(f.clients.experts.experts().experts.find(item => item.id === 'manager').revision, 1);
 });
 
 test('提炼留在技能页并复用小鲸原生会话，已有草稿保持且不创建专家工作区任务', async () => {
@@ -2567,7 +2388,7 @@ test('新增技能固定员工输入身份且经实际read回读，不创建会�
   // 新建按钮不要求先读列表或进入会话。
   const base = await fixture(); await button(base.render(), '技能成长').props.onClick(); button(base.render(), '新增技能').props.onClick();
   const editor = nodes(base.render()).find(node => node.type?.name === 'SkillEditor');
-  let saved; editor.props.api = f.api; editor.props.onSaved = value => { saved = value; };
+  let saved; editor.props.api = f.clients.skills; editor.props.onSaved = value => { saved = value; };
   const render = base.isolate(editor); render(); base.flushEffects();
   nodes(render()).find(node => node.type === 'input').props.onChange({ target: { value: 'my-method' } });
   await button(render(), '保存技能').props.onClick();
@@ -2595,19 +2416,19 @@ test('图谱Remote边界复用唯一graphResult，拒收旧版degree和其它动
   const graph = { version: 2, nodes: [{ kind: 'note', readOnly: false, path: 'a.md', title: 'A', degree: 0 }], edges: [], total: 1, offset: 0, truncated: false, omittedEdges: 0, unresolved: 0 };
   let reply = graph;
   const f = await fixture({ knowledge: async () => ({ ok: true, value: reply }) });
-  assert.deepEqual(await f.api.knowledge({ action: 'graph' }), knowledgeContract(z).graphResult.parse(graph));
+  assert.deepEqual(await f.clients.knowledge.knowledge({ action: 'graph' }), knowledgeContract(z).graphResult.parse(graph));
   for (const degree of [undefined, -1, NaN, Infinity]) {
     reply = { ...graph, nodes: [{ kind: 'note', readOnly: false, path: 'a.md', title: 'A', ...(degree === undefined ? {} : { degree }) }] };
-    await assert.rejects(f.api.knowledge({ action: 'graph' }), { code: 'graph_contract_mismatch', message: '图谱数据与当前界面不匹配，请完全退出并重新打开 DSH' });
+    await assert.rejects(f.clients.knowledge.knowledge({ action: 'graph' }), { code: 'graph_contract_mismatch', message: '图谱数据与当前界面不匹配，请完全退出并重新打开 DSH' });
   }
   for (const old of [{ nodes: [], edges: [], total: 0, offset: 0, truncated: false, omittedEdges: 0, unresolved: 0 }, { ...emptyGraph(), version: 1 }]) {
     reply = old;
-    await assert.rejects(f.api.knowledge({ action: 'graph' }), { code: 'graph_contract_mismatch' });
+    await assert.rejects(f.clients.knowledge.knowledge({ action: 'graph' }), { code: 'graph_contract_mismatch' });
   }
   reply = { path: 'a.md', content: '正文', hash: 'hash', readOnly: false };
   assert.equal(knowledgeContract(z).result.safeParse(reply).success, true);
-  await assert.rejects(f.api.knowledge({ action: 'graph' }), { code: 'graph_contract_mismatch' });
-  assert.equal(await f.api.knowledge({ action: 'read', path: 'a.md' }), reply);
+  await assert.rejects(f.clients.knowledge.knowledge({ action: 'graph' }), { code: 'graph_contract_mismatch' });
+  assert.equal(await f.clients.knowledge.knowledge({ action: 'read', path: 'a.md' }), reply);
   assert.match(f.dictionaries.get('whalewing').en.graphVersionMismatch, /Fully quit and reopen DSH/);
 });
 
@@ -2620,23 +2441,23 @@ test('坏图谱不进入画布，原位短错误保留重新读取入口', async
 });
 
 test('原生视图恢复旧草稿后才合入提议，引用附件保持；卸载取消后再次挂载也不晚写', async () => {
-  const f = await fixture(); const id = await f.api.ensureAssistant(); const reference = f.api.retain(id);
+  const f = await fixture(); const id = await f.clients.assistant.ensureAssistant(); const reference = f.bridge.retain(id);
   const input = f.inputFor(id);
-  const waiting = f.api.proposeDiscussion(reference, '讨论提议');
+  const waiting = f.clients.assistant.proposeDiscussion(reference, '讨论提议');
   await new Promise(setImmediate);
   assert.equal(input.inserts.length, 0);
   const saved = { ...input.state.getSnapshot(), draft: '重新进入前的草稿', occurrences: [{ source: 'file', ref: 'a.md' }], attachmentIds: ['attachment'] };
   input.state.set(saved);
-  const release = f.api.mountAssistantInput(id);
+  const release = f.clients.assistant.mountAssistantInput(id);
   await waiting;
   assert.match(input.state.getSnapshot().draft, /^重新进入前的草稿\n\n讨论提议/);
   assert.equal(input.state.getSnapshot().occurrences, saved.occurrences);
   assert.equal(input.state.getSnapshot().attachmentIds, saved.attachmentIds);
   release();
   const controller = new AbortController();
-  const cancelled = f.api.proposeDiscussion(reference, '应取消的提议', controller.signal);
+  const cancelled = f.clients.assistant.proposeDiscussion(reference, '应取消的提议', controller.signal);
   controller.abort(); await assert.rejects(cancelled, { name: 'AbortError' });
-  const remount = f.api.mountAssistantInput(id); await new Promise(setImmediate);
+  const remount = f.clients.assistant.mountAssistantInput(id); await new Promise(setImmediate);
   assert.equal(input.inserts.length, 1);
   assert.equal(f.calls.some(item => item[0] === 'prompt'), false);
   remount(); reference.release();
@@ -2731,7 +2552,7 @@ test('系统编辑不接管同名user或其它原件覆盖，入口与未知回�
     await button(f.render(), '编辑技能').props.onClick();
     assert.equal(nodes(f.render()).some(node => node.type?.name === 'SkillEditor'), false);
     assert.ok(nodes(f.render()).some(node => node.props.role === 'alert'));
-    await assert.rejects(f.api.resolveSkillEdit(base), { code: 'skill_origin_conflict' });
+    await assert.rejects(f.clients.skills.resolveSkillEdit(base), { code: 'skill_origin_conflict' });
   }
 });
 
@@ -2770,7 +2591,7 @@ test('技能A与B讨论分别合入同一原生草稿，重复点击不重插且
   assert.equal(sends.length, 0); assert.equal(input.inserts.length, 2);
   assert.ok(input.state.getSnapshot().draft.includes('hash-A')); assert.ok(input.state.getSnapshot().draft.includes('hash-B'));
   assert.equal(nodes(render()).find(node => node.type === 'SessionProvider').props.session, reference);
-  assert.equal(f.api.pendingQuestion, undefined);
+  assert.equal(f.clients.assistant.pendingQuestion, undefined);
   assert.equal(f.calls.some(item => item[0] === 'open'), false);
   f.unmount();
 });
@@ -3032,17 +2853,21 @@ test('定时暂停冲突保留原任务，暂停中编辑使用paused状态且�
   assert.equal(updates[0].expectedStatus, 'paused'); assert.equal(taskField(f, '任务名称').props.value, '暂停中修改');
 });
 
-test('缺定时依赖仍可编辑草稿，提交明确报错且提供可操作插件设置入口', async () => {
+test('缺定时服务以刷新为主恢复，旧版设置为次入口且保留草稿', async () => {
   const f = await fixture({ automation: async () => taskCatalog([], [], false) });
   f.ctx.layout = { selectPanel: panel => f.calls.push(['panel', panel]) };
-  await button(f.render(), '定时任务').props.onClick(); await button(f.render(), '打开插件设置').props.onClick();
+  await button(f.render(), '定时任务').props.onClick();
+  const unavailable = nodes(f.render()).find(node => node.props.className === 'yj-schedule-off');
+  assert.match(button(unavailable, '重试').props.className, /yj-primary/);
+  assert.doesNotMatch(button(f.render(), '旧版：打开插件设置').props.className || '', /yj-primary/);
+  await button(f.render(), '旧版：打开插件设置').props.onClick();
   assert.deepEqual(f.calls.at(-1), ['panel', 'plugins']);
   button(f.render(), '新增定时任务').props.onClick();
   taskField(f, '任务名称', '保留草稿'); taskField(f, '工作指令', '待依赖就绪后执行');
   assert.equal(button(f.render(), '确认创建计划').props.disabled, false);
   await button(f.render(), '确认创建计划').props.onClick();
   assert.equal(taskField(f, '任务名称').props.value, '保留草稿');
-  assert.ok(nodes(f.render()).some(node => node.props.role === 'alert' && node.props.children.includes('定时任务需要先开启 DeepSeek 官方的「定时任务」插件')));
+  assert.ok(nodes(f.render()).some(node => node.props.role === 'alert' && node.props.children.includes('DSH 定时服务尚未就绪')));
   assert.equal(f.calls.some(([kind]) => ['create', 'prompt', 'automationClaim'].includes(kind)), false);
 });
 
@@ -3258,6 +3083,39 @@ test('每日卡片展示重点与个人理由，正文只进顶层阅读窗口�
  dialog.props.onCancel({preventDefault(){}});assert.equal(nodes(f.render()).some(node=>node.type==='dialog'),false);
 });
 
+test('两个轮换日六篇学习正文均以中文进入阅读器，准确展示译文和校订来源',async()=>{
+ const seen=new Set();
+ for(const day of ['2026-10-12','2026-10-13']){
+  const learning=dailyLearning(Date.parse(`${day}T00:00:00Z`));
+  const f=await fixture({news:async input=>{assert.equal(input.action,'home');return {ok:true,value:{reports:[],learning}};}});
+  await button(f.render(),'知识卡片').props.onClick();const before=f.calls.length;
+  const css=nodes(f.render()).filter(node=>node.type==='style').map(node=>node.props.children.join('')).join('');
+  const colophon=css.match(/\.yj-book-colophon\{([^}]+)\}/)?.[1];assert.ok(colophon);
+  assert.match(colophon,/break-inside:avoid/);assert.doesNotMatch(colophon,/(?:max-)?height:|overflow:(?:hidden|clip)/,'长来源块仍可由浏览器正常分栏，不固定高度或裁剪');
+  for(const card of learning.cards){
+   seen.add(card.id);nodes(f.render()).find(node=>node.type==='article'&&node.props.key===card.id).props.onClick();
+   const dialog=nodes(f.render()).find(node=>node.type==='dialog');assert.ok(dialog);
+   assert.ok(JSON.stringify(dialog).includes('课程正文'));assert.ok(!JSON.stringify(dialog).includes('完整原文'));
+   const rendered=nodes(dialog).find(node=>node.props.className==='yj-rendered');assert.equal(rendered.props.lang,'zh-CN');
+   assert.ok(JSON.stringify(dialog).includes(card.source.usage));
+   assert.ok(nodes(dialog).some(node=>node.type==='a'&&node.props.href===card.source.url));
+   if(card.category!=='AI 工具技巧')assert.ok(JSON.stringify(rendered).includes('非OpenStax官方译本'));
+   if(card.id==='ai-specific'){
+    assert.ok(JSON.stringify(rendered).includes('此处由鲸翼校订'));
+    assert.ok(!JSON.stringify(rendered).includes('CO-OP TRANSLATOR DISCLAIMER'));
+    assert.ok(JSON.stringify(rendered).includes('自动翻译可能包含错误'));
+    assert.ok(nodes(rendered).some(node=>node.type==='br'));
+    assert.ok(nodes(rendered).some(node=>node.type==='strong'&&JSON.stringify(node).includes('简短总结')));
+   }
+   if(card.id==='ai-example')assert.ok(nodes(rendered).some(node=>node.type==='code'&&JSON.stringify(node).includes('<h1>Books API</h1>')));
+   if(card.id==='economics-budget')assert.ok(nodes(rendered).some(node=>node.type==='table'),'预算数值仍作为表格呈现');
+   dialog.props.onCancel({preventDefault(){}});assert.equal(nodes(f.render()).some(node=>node.type==='dialog'),false);
+  }
+  assert.equal(f.calls.length,before,'打开全文不调用外站、模型或其他业务');f.unmount();
+ }
+ assert.equal(seen.size,6);
+});
+
 test('AI网页消费正式RPC，十个默认图标不可删除，自定义仅名字网址完成增改删',async()=>{
  let entries=[...aiWebEntries];const requests=[];
  const f=await fixture({expand:['AiWebView'],aiWeb:async input=>{requests.push(input);if(input.action==='save'){const entry={...input.entry,id:input.id,revision:input.expectedRevision+1,builtin:false,provider:'',keywords:''};entries=[...entries.filter(item=>item.id!==entry.id),entry];}if(input.action==='remove')entries=entries.filter(item=>item.id!==input.id);return {ok:true,value:{entries}};}});
@@ -3308,12 +3166,385 @@ test('原生DSH打开AI网页：在专用「AI 网页」会话的右侧浏览器
   const sidebar = { mounted: { getSnapshot: () => mountedId }, openTab: (...args) => { opened.push(args); tabs.push('tab-' + opened.length); }, tabsIn: () => tabs.map(id => ({ id, kind: 'browser' })), focus: id => focused.push(id), isExpanded: () => expanded, toggleExpanded: () => { expanded = !expanded; } };
   const f = await fixture({ sidebarRight: sidebar });
   f.ctx.uiWorkspace.openSession = id => { mountedId = id; f.calls.push(['open', id]); };
-  assert.equal(f.api.hostAdapted(), false);
-  await f.api.openAiInConversation('https://chat.deepseek.com/', 'deepseek');
-  await f.api.openAiInConversation('https://chat.deepseek.com/', 'deepseek');
+  assert.equal(f.clients['ai-web'].supportsInlinePresentation(), false);
+  await f.clients['ai-web'].openAiInConversation('https://chat.deepseek.com/', 'deepseek');
+  await f.clients['ai-web'].openAiInConversation('https://chat.deepseek.com/', 'deepseek');
   assert.equal(opened.length, 1); assert.deepEqual(focused, ['tab-1']); assert.equal(expanded, true);
   const created = f.calls.filter(([kind]) => kind === 'create');
   assert.equal(created.length, 1); assert.match(created[0][1].sessionId, /^whalewing-aiweb-/);
   assert.ok(f.calls.some(([kind, request]) => kind === 'rename' && request.title === 'AI 网页'));
   assert.equal(f.calls.filter(([kind]) => kind === 'open').every(([, id]) => id === created[0][1].sessionId), true);
+});
+
+test('外部页签使用同一列表插槽，按order动态插入并只渲染选中内容', async () => {
+  const f = await fixture({ expand: ['ExternalView'] });
+  let title = '扩展报表', shownWorkbench, refreshed = 0;
+  function ExternalView({ workbench, active }) {
+    shownWorkbench = workbench;
+    f.react.useLayoutEffect(() => workbench.onRefresh(() => { refreshed++; }), [workbench]);
+    return f.react.createElement('section', { 'data-external': true }, active ? '扩展内容' : '隐藏');
+  }
+  const frame = featureFrame(1); frame.features.push({ id: 'reports', instance: 100, kind: 'extension', api: 1, package: 'reports', skills: [] });
+  await f.featureUpdate(frame);
+  const off = f.ctx.slots.register({ name: 'whalewing.workbench.tab', id: 'reports', order: 75, label: () => title }, ExternalView);
+  let tree = f.render(), nav = nodes(tree).find(node => node.type === 'nav');
+  assert.deepEqual(nodes(nav).filter(node => node.type === 'button').map(node => node.props.children[0]).slice(-3), ['知识卡片', '扩展报表', '模型世界']);
+  assert.equal(nodes(tree).some(node => node.props['data-external']), false);
+  await button(tree, '扩展报表').props.onClick();
+  assert.ok(nodes(f.render()).some(node => node.props.children.includes('扩展内容')));
+  assert.equal(refreshed, 1);
+  for (const method of ['run', 'notify', 'guardLeave', 'onRefresh', 'openTab', 'manageFeatures', 'explainError']) assert.equal(typeof shownWorkbench[method], 'function');
+  await button(f.render(), '刷新').props.onClick(); assert.equal(refreshed, 2);
+  const beforeLocale = f.ctx.whalewingWorkbench.internal.tabSnapshot();
+  title = 'Report'; f.localeListeners.forEach(listener => listener());
+  assert.notEqual(f.ctx.whalewingWorkbench.internal.tabSnapshot(), beforeLocale); assert.ok(button(f.render(), 'Report'));
+  await button(f.render(), '专家团队').props.onClick(); off();
+  assert.equal(nodes(f.render()).some(node => node.props['data-tab'] === 'reports'), false);
+  f.unmount();
+});
+
+test('隐藏页签的公开刷新与离开检查固定归属，不覆盖当前页签', async () => {
+  const f = await fixture(); f.render();
+  await button(f.render(), '个人知识').props.onClick();
+  const entries = f.registrations.get('whalewing.workbench.tab');
+  const knowledge = entries.find(entry => entry.options.id === 'knowledge');
+  let pageWorkbench;
+  const original = knowledge.Component;
+  knowledge.Component = function KnowledgeView(props) { pageWorkbench = props.workbench; return original(props); };
+  f.render(); await button(f.render(), '技能成长').props.onClick();
+  let refreshed = 0, guarded = 0;
+  const offRefresh = pageWorkbench.onRefresh(() => { refreshed++; });
+  const offGuard = pageWorkbench.guardLeave(() => { guarded++; return '知识草稿保留'; });
+  await button(f.render(), '刷新').props.onClick();
+  assert.equal(refreshed, 0);
+  await button(f.render(), '专家团队').props.onClick(); assert.equal(guarded, 0);
+  await button(f.render(), '个人知识').props.onClick(); assert.equal(refreshed, 1);
+  await button(f.render(), '技能成长').props.onClick(); assert.equal(guarded, 1);
+  offRefresh(); offGuard(); f.unmount();
+});
+
+test('公共run同步禁用切换并传播停止信号，迟到结果不提交', async () => {
+  const f = await fixture(); f.render();
+  const held = Promise.withResolvers(); let signal, adopted = false;
+  const pending = f.ctx.whalewingWorkbench.run(async value => { signal = value; await held.promise; return () => { adopted = true; }; });
+  assert.equal(button(f.render(), '个人知识').props.disabled, true);
+  button(f.render(), '停止等待结果').props.onClick(); assert.equal(signal.aborted, true);
+  held.resolve(); await pending;
+  assert.equal(adopted, false); assert.equal(button(f.render(), '个人知识').props.disabled, false);
+  f.unmount();
+});
+
+test('主面板卸载与外壳导航布局共同复位，重新进入可重新加载页签', async () => {
+  const f = await fixture();
+  await button(f.render(), '个人知识').props.onClick();
+  button(f.render(), '打开小鲸助手').props.onClick();
+  button(f.render(), '停靠').props.onClick();
+  assert.ok(nodes(f.render()).some(node => node.props.className === 'yj-workspace yj-workspace-dock'));
+  f.unmount();
+  const tree = f.render();
+  assert.equal(nodes(tree).find(node => node.props['data-tab'] === 'experts').props['aria-pressed'], true);
+  assert.ok(button(tree, '打开小鲸助手'));
+  assert.ok(nodes(tree).some(node => node.props.className === 'yj-workspace yj-workspace-bubble'));
+  const before = f.calls.filter(([kind]) => kind === 'knowledge').length;
+  await button(f.render(), '个人知识').props.onClick();
+  assert.ok(f.calls.filter(([kind]) => kind === 'knowledge').length > before);
+  f.unmount();
+});
+
+test('恢复弹窗真实重建并回读工作台身份，然后才继续当前页刷新', async () => {
+  const key = 'whalewing:workbench:http://fixture.local';
+  const f = await fixture({ storage: new Map([[key, 'foreign-session']]), existing: new Map([['foreign-session', false]]) });
+  f.render();
+  await f.ctx.whalewingWorkbench.run(signal => f.workbenchSession.ensureWorkbench(signal));
+  assert.ok(nodes(f.render()).some(node => node.props.children.includes('foreign-session')));
+  const prepare = nodes(f.render()).find(node => node.type === 'button' && node.props.className === 'yj-primary' && node.props.children.includes('重新准备知识工作台'));
+  assert.ok(prepare); await prepare.props.onClick();
+  const id = f.storage.get(key);
+  assert.notEqual(id, 'foreign-session'); assert.equal(f.existing.get(id), true);
+  assert.equal(f.existing.get('foreign-session'), false);
+  assert.equal(f.calls.filter(([kind]) => kind === 'create').length, 1);
+  assert.ok(f.calls.some(([kind, value]) => kind === 'confirm' && value === id));
+  assert.equal(f.ctx.whalewingWorkbench.internal.snapshot().recoverySession, '');
+  f.unmount();
+});
+
+for (const [label, method, reply] of [
+  ['技能成长', 'skillLibrary', input => ({ ok: true, value: { entries: [], offset: 0, total: 0, truncated: false } })],
+  ['定时任务', 'automation', input => taskCatalog()],
+  ['知识卡片', 'news', input => ({ ok: true, value: newsHomeResult() })],
+]) test(`${label}读失败的恢复动作绑定原页，切页后不刷新其他领域`, async () => {
+  let failed = true, reads = 0;
+  const f = await fixture({ [method]: async input => { reads++; if (failed) return { ok: false, error: { code: 'offline', message: '本页读取中断' } }; return reply(input); } });
+  await button(f.render(), label).props.onClick();
+  const retry = button(f.render(), '重试').props.onClick;
+  failed = false;
+  await button(f.render(), '专家团队').props.onClick();
+  const before = reads; await retry();
+  assert.ok(reads > before);
+  assert.equal(nodes(f.render()).find(node => node.props['data-tab'] === 'experts').props['aria-pressed'], true);
+  f.unmount();
+});
+
+test('专家后台读取失败的重试仍属于专家，不按点击时的页签猜测', async () => {
+  const held = Promise.withResolvers(); let reads = 0, skills = 0;
+  const f = await fixture({ experts: async input => { assert.equal(input.action, 'list'); reads++; return reads === 2 ? held.promise : { ok: true, value: { experts: roles, deleted: [] } }; }, skillLibrary: async input => { skills++; return { ok: true, value: { entries: [], offset: 0, total: 0, truncated: false } }; } });
+  f.render(); f.flushEffects();
+  await button(f.render(), '技能成长').props.onClick();
+  held.resolve({ ok: false, error: { code: 'offline', message: '专家读取中断' } }); await new Promise(setImmediate);
+  const before = skills;
+  await button(f.render(), '重试').props.onClick();
+  assert.equal(reads, 3); assert.equal(skills, before);
+  assert.equal(nodes(f.render()).find(node => node.props['data-tab'] === 'skills').props['aria-pressed'], true);
+  f.unmount();
+});
+
+
+test('工作台页头独占稳定行高，无刷新动作时不恢复空按钮', async () => {
+  const f = await fixture();
+  const first = f.render();
+  const header = tree => nodes(tree).find(node => node.type === 'header' && node.props.className === 'yj-header yj-workbench-header');
+  assert.ok(header(first)); assert.ok(button(header(first), '刷新'));
+  const css = nodes(first).find(node => node.type === 'style').props.children[0];
+  assert.match(css, /\.yj-page>\.yj-workbench-header\{min-height:36px\}/);
+  await button(first, 'AI 网页').props.onClick();
+  const second = f.render(); assert.ok(header(second));
+  assert.equal(nodes(header(second)).some(node => node.type === 'button'), false);
+  assert.equal(nodes(second).filter(node => node.props.className === 'yj-header yj-workbench-header').length, 1);
+  f.unmount();
+});
+
+// 开关验收只消费真实登记帧，不把个人技能库当作 DSH 的活动技能目录。
+const featureFrame = (revision, omitted = [], errors = {}) => ({ revision, features: parts.filter(part => !omitted.includes(part.id)).map(part => ({ instance: parts.indexOf(part) + 1, id: part.id, kind: part.kind, api: 1, package: 'dsh-whalewing', skills: [], ...(errors[part.id] ? { error: errors[part.id] } : {}) })) });
+const tabIds = f => nodes(f.render()).filter(node => node.props?.['data-tab']).map(node => node.props['data-tab']);
+
+test('首帧之前只有底座，首帧完整列表驱动四个可选的Remote与页签', async () => {
+  let first;
+  const f = await fixture({ workbenchRemote: { async *watchFeatures(signal) { yield await new Promise(resolve => { first = resolve; }); await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })); } } });
+  assert.deepEqual(tabIds(f), ['experts', 'knowledge', 'skills', 'schedule']);
+  assert.equal(f.remoteMounts.some(([kind, name]) => kind === 'mount' && name === 'whalewingAiWeb'), false);
+  first(featureFrame(0)); await f.settlePlugins();
+  assert.deepEqual(tabIds(f), ['experts', 'aiWeb', 'knowledge', 'skills', 'schedule', 'toolbox', 'news', 'models']);
+  assert.equal(f.remoteMounts.filter(([kind, name]) => kind === 'mount' && name === 'whalewingAiWeb').length, 1);
+  for (const dispose of f.disposed) await dispose();
+});
+
+test('四可选关闭撤销全部页签和AI工具栏，再开只注册一次且不清员工数据', async () => {
+  const f = await fixture();
+  await f.featureUpdate(featureFrame(1, ['ai-web', 'toolbox', 'cards', 'model-world']));
+  assert.deepEqual(tabIds(f), ['experts', 'knowledge', 'skills', 'schedule']);
+  assert.equal(f.registrations.get('browser.toolbar.actions').length, 0);
+  for (const name of ['whalewingAiWeb', 'whalewingCards', 'whalewingModelWorld']) assert.equal(f.remoteMounts.filter(([kind, value]) => kind === 'unmount' && value === name).length, 1);
+  assert.equal(f.calls.some(([kind]) => ['news', 'world', 'aiWeb'].includes(kind)), false);
+  await f.featureUpdate(featureFrame(2));
+  assert.equal(f.registrations.get('browser.toolbar.actions').length, 1);
+  assert.equal(tabIds(f).length, 8);
+  assert.equal(f.remoteMounts.filter(([kind, name]) => kind === 'mount' && name === 'whalewingAiWeb').length, 2);
+  f.unmount();
+});
+
+test('关闭正等待的可选功能撤销作用域、解除busy并回专家，迟到任务和旧重试失效', async () => {
+  const f = await fixture({ news: async () => ({ ok: true, value: newsList() }) });
+  const core = f.ctx.whalewingWorkbench.internal;
+  const old = core.scope('cards');
+  // 直接公开run模拟外部同型插件，不旁路它的取消与通知所有权。
+  let finish, signal, committed = 0, retried = 0;
+  old.notify('旧操作', { action: { label: '旧重试', run: () => { retried++; } } });
+  const retry = button(f.render(), '旧重试').props.onClick;
+  const pending = old.run(async value => { signal = value; await new Promise(resolve => { finish = resolve; }); return () => { committed++; }; });
+  assert.equal(core.snapshot().busy, true);
+  await f.featureUpdate(featureFrame(1, ['cards']));
+  assert.equal(signal.aborted, true); assert.equal(core.snapshot().busy, false);
+  finish(); await pending; retry();
+  assert.equal(committed, 0); assert.equal(retried, 0);
+  await old.run(async () => { committed++; }); assert.equal(committed, 0);
+  await f.featureUpdate(featureFrame(2));
+  const fresh = core.scope('cards'); assert.notEqual(fresh, old);
+  await fresh.run(async () => () => { committed++; }); assert.equal(committed, 1);
+  f.unmount();
+});
+
+test('当前可选被关立即回专家并提示，keepAlive访问记录清除后重开', async () => {
+  const f = await fixture();
+  await button(f.render(), '工具台').props.onClick(); await settleView(f);
+  const core = f.ctx.whalewingWorkbench.internal;
+  assert.equal(core.visited.has('toolbox'), true);
+  await f.featureUpdate(featureFrame(1, ['toolbox']));
+  assert.equal(core.snapshot().tab, 'experts'); assert.equal(core.visited.has('toolbox'), false);
+  assert.ok(nodes(f.render()).some(node => node.props.children?.includes('「工具台」已关闭')));
+  await f.featureUpdate(featureFrame(2));
+  assert.equal(core.visited.has('toolbox'), false);
+  await button(f.render(), '工具台').props.onClick(); await settleView(f);
+  assert.ok(nodes(f.render()).some(node => node.type?.name === 'ToolboxView'));
+  f.unmount();
+});
+
+test('单底座Remote未就绪仍有主入口和其他页面，失败原因与retryBase保持权威帧', async () => {
+  let tries = 0;
+  const f = await fixture({ featureFrame: featureFrame(0, [], { knowledge: '知识库目录暂不可读，请检查目录后重试' }), retryBase: async id => { assert.equal(id, 'knowledge'); tries++; return { ok: true, value: featureFrame(tries) }; } });
+  await button(f.render(), '个人知识').props.onClick();
+  assert.ok(nodes(f.render()).some(node => node.props.children?.includes('知识库目录暂不可读，请检查目录后重试')));
+  await button(f.render(), '重试').props.onClick();
+  assert.equal(tries, 1); f.render(); await f.settlePlugins(); assert.ok(nodes(f.render()).some(node => node.props.className === 'yj-graph-empty')); assert.ok(f.calls.some(([kind, input]) => kind === 'knowledge' && input.action === 'graph'));
+  f.unmount();
+  const waiting = await fixture({ missingRemotes: ['whalewingKnowledge'] });
+  assert.equal(tabIds(waiting).length, 8);
+  await button(waiting.render(), '个人知识').props.onClick();
+  assert.ok(nodes(waiting.render()).some(node => node.props.children?.includes('正在连接功能…')));
+  await button(waiting.render(), '技能成长').props.onClick();
+  assert.equal(waiting.calls.some(([kind]) => kind === 'knowledge'), false);
+  waiting.unmount();
+});
+
+test('小鲸助手失败在自身入口重试，不增页签或阻断其他底座', async () => {
+  const f = await fixture({ featureFrame: featureFrame(0, [], { assistant: '小鲸助手加载失败，请重试' }), retryBase: async id => { assert.equal(id, 'assistant'); return { ok: true, value: featureFrame(1) }; } });
+  assert.equal(tabIds(f).length, 8);
+  assert.ok(nodes(f.render()).some(node => node.props.children?.includes('小鲸助手加载失败，请重试')));
+  await button(f.render(), '重试').props.onClick();
+  assert.ok(button(f.render(), '打开小鲸助手')); f.unmount();
+});
+
+test('每日资讯关闭标记来自共享帧且无知识卡片入口，不跨读或补建默认计划', async () => {
+  const task = { ...taskRecord(), sessionId: 'news-1', purpose: 'news', status: 'active' };
+  const f = await fixture({ featureFrame: featureFrame(0, ['cards']), automation: async input => { assert.equal(input.action, 'catalog'); return taskCatalog([task]); } });
+  await button(f.render(), '定时任务').props.onClick();
+  assert.ok(nodes(f.render()).some(node => node.props.children?.some(value => typeof value === 'string' && value.includes('所属功能已关闭'))));
+  assert.equal(nodes(f.render()).some(node => node.type === 'button' && node.props.children?.includes('知识卡片')), false);
+  assert.equal(f.calls.some(([kind]) => kind === 'news'), false);
+  await f.featureUpdate(featureFrame(1));
+  assert.ok(button(f.render(), '知识卡片')); f.unmount();
+});
+
+test('管理功能使用可选导航服务，未提供不显示空入口', async () => {
+  const opened = [];
+  const f = await fixture({ pluginNavigation: { openBundle: name => opened.push(name) } });
+  button(f.render(), '管理功能').props.onClick(); assert.deepEqual(opened, ['dsh-whalewing']); f.unmount();
+  const absent = await fixture(); assert.equal(nodes(absent.render()).some(node => node.type === 'button' && node.props.children?.includes('管理功能')), false); absent.unmount();
+});
+
+test('外部metadata按Host身份连接，end整体靠右且SVG仅作为16px蒙版', async () => {
+  const frame = featureFrame(0); frame.features.push({ id: 'ordinary', instance: 100, kind: 'extension', api: 1, package: 'ordinary', skills: [] }, { id: 'external', instance: 101, kind: 'extension', api: 1, package: 'external', skills: [], tab: { placement: 'end', keepAlive: true, icon: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h16v16z"/></svg>' } });
+  const f = await fixture({ featureFrame: frame });
+  f.ctx.slots.register({ name: 'whalewing.workbench.tab', id: 'ordinary', order: 100, label: () => '普通扩展' }, () => null);
+  f.ctx.slots.register({ name: 'whalewing.workbench.tab', id: 'external', order: 110, label: () => '末尾扩展' }, () => null);
+  const nav = nodes(f.render()).filter(node => node.props?.['data-tab']);
+  assert.deepEqual(nav.slice(-3).map(node => node.props['data-tab']), ['ordinary', 'models', 'external']);
+  assert.equal(nav.filter(node => node.props.className.includes('yj-world-tab')).length, 1);
+  const icon = nodes(nav.at(-1)).find(node => node.props.style?.mask);
+  assert.equal(icon.props.style.width, 16); assert.equal(icon.props.style.height, 16);
+  assert.match(icon.props.style.mask, /data:image\/svg\+xml,%3Csvg/); assert.equal(icon.props.dangerouslySetInnerHTML, undefined);
+  f.unmount();
+});
+
+
+test('关闭AI网页释放自己的内容租约和引用，再开不复活旧浏览器操作', async () => {
+  const sidebar = browserService(), f = await fixture({ sidebarRight: sidebar.service });
+  await button(f.render(), 'AI 网页').props.onClick();
+  const opened = aiOpen(f)('https://chat.deepseek.com/');
+  await browserCommit(f); sidebar.mounted = sidebar.presented; await browserCommit(f); await opened;
+  const id = sidebar.presented;
+  assert.ok(id); assert.equal(sidebar.opened.length, 1);
+  await f.featureUpdate(featureFrame(1, ['ai-web'])); f.render(); f.flushEffects();
+  assert.equal(sidebar.presented, undefined); assert.equal(sidebar.focused, undefined);
+  assert.ok(f.calls.some(([kind, value]) => kind === 'release' && value === id));
+  assert.equal(f.registrations.get('browser.toolbar.actions').length, 0);
+  await f.featureUpdate(featureFrame(2)); await button(f.render(), 'AI 网页').props.onClick();
+  assert.equal(sidebar.opened.length, 1); f.unmount();
+});
+
+test('工具台关闭真实组件生命周期会终止Worker并撤销下载，普通跨页仍保留同一下载', async t => {
+  const originalWorker = globalThis.Worker, workers = [], revoked = []; let serial = 0;
+  t.after(() => { globalThis.Worker = originalWorker; });
+  globalThis.Worker = class { constructor() { workers.push(this); } postMessage(message) { this.message = message; } terminate() { this.terminated = true; } };
+  t.mock.method(globalThis.URL, 'createObjectURL', () => 'blob:fixture-' + ++serial);
+  t.mock.method(globalThis.URL, 'revokeObjectURL', value => revoked.push(value));
+  const f = await fixture({ expand: ['ToolboxView'] }); t.after(() => f.unmount());
+  await button(f.render(), '工具台').props.onClick(); await settleView(f); f.flushEffects();
+  const search = nodes(f.render()).find(node => node.type === 'input' && node.props.type === 'search');
+  search.props.onChange({ target: { value: '生成二维码' } });
+  button(f.render(), '生成二维码').props.onClick(); f.render(); f.flushEffects();
+  nodes(f.render()).find(node => node.type === 'textarea').props.onChange({ target: { value: 'fixture' } });
+  await button(f.render(), '开始处理').props.onClick();
+  const first = workers[0]; assert.ok(first);
+  first.onmessage({ data: { id: first.message.id, ok: true, result: { files: [{ name: 'fixture.png', mime: 'image/png', bytes: new Uint8Array([1]) }], summary: '已生成' } } });
+  const download = nodes(f.render()).find(node => node.type === 'a' && node.props.download).props.href;
+  await button(f.render(), '专家团队').props.onClick(); f.flushEffects();
+  await button(f.render(), '工具台').props.onClick(); await settleView(f); f.flushEffects();
+  assert.equal(nodes(f.render()).find(node => node.type === 'a' && node.props.download).props.href, download);
+  assert.equal(revoked.includes(download), false);
+  await button(f.render(), '开始处理').props.onClick(); const second = workers[1]; assert.ok(second);
+  await f.featureUpdate(featureFrame(1, ['toolbox'])); f.render(); f.flushEffects();
+  assert.equal(second.terminated, true); assert.equal(revoked.includes(download), true);
+  second.onmessage({ data: { id: second.message.id, ok: true, result: { files: [{ name: 'late.png', mime: 'image/png', bytes: new Uint8Array([2]) }], summary: '迟到' } } });
+  await f.featureUpdate(featureFrame(2)); await button(f.render(), '工具台').props.onClick(); await settleView(f); f.flushEffects();
+  assert.equal(nodes(f.render()).some(node => node.type === 'a' && node.props.download), false);
+});
+
+
+test('AI网页已有会话等待只读恢复后完成专用命名，不重复创建', async () => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); let mounted;
+  const storage = new Map([['whalewing:aiweb:http://fixture.local', 'saved-ai']]);
+  const f = await fixture({ storage, existing: new Map([['saved-ai', false]]), workspaceState: { items: [{ workspaceId: 'existing', path: 'E:/fixture', sessionIds: ['saved-ai'] }] }, nativeCommandList: async id => { assert.equal(id, 'saved-ai'); entered.resolve(); await release.promise; return { ok: true, value: [] }; }, sidebarRight: { mounted: { getSnapshot: () => mounted }, openTab() {} } });
+  f.ctx.uiWorkspace.openSession = id => { mounted = id; f.calls.push(['open', id]); };
+  const operation = f.clients['ai-web'].openAiInConversation(undefined); await entered.promise;
+  assert.equal(f.calls.some(([kind]) => kind === 'open'), false);
+  release.resolve(); await operation;
+  assert.ok(f.calls.some(([kind, id]) => kind === 'lookup' && id === 'saved-ai'));
+  assert.deepEqual(f.calls.filter(([kind]) => kind === 'rename'), [['rename', { sessionId: 'saved-ai', title: 'AI 网页' }]]);
+  assert.ok(f.calls.findIndex(([kind]) => kind === 'lookup') < f.calls.findIndex(([kind]) => kind === 'rename'));
+  assert.equal(f.calls.some(([kind]) => ['create', 'command', 'attach'].includes(kind)), false);
+});
+
+test('纯恢复只读查找失败保留原ID并给重新检查，不发工作区接线', async () => {
+  const storage = new Map([['whalewing:workbench:http://fixture.local', 'claimed']]);
+  const f = await fixture({ storage, existing: new Map([['claimed', true]]), nativeCommandList: async () => ({ ok: false, error: { code: 'session/not-found', message: '尚未找到原会话' } }) });
+  await assert.rejects(f.workbenchSession.ensureWorkbench(), { code: 'session/not-found', sessionId: 'claimed', recovery: 'check' });
+  assert.equal(storage.get('whalewing:workbench:http://fixture.local'), 'claimed');
+  assert.equal(f.calls.some(([kind]) => ['create', 'attach', 'claim', 'confirm'].includes(kind)), false);
+});
+
+
+test('AI专用会话首次命名失败后按原ID恢复，list完成后补命名再打开', { timeout: 10000 }, async () => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); let mounted, attempts = 0; const order = [];
+  const f = await fixture({ nativeCommandList: async id => { order.push(['lookup-start', id]); entered.resolve(); await release.promise; order.push(['lookup-done', id]); return { ok: true, value: [] }; }, sidebarRight: { mounted: { getSnapshot: () => mounted }, openTab() {} } });
+  f.ctx.remote.session.rename = async input => { order.push(['rename', input]); return ++attempts === 1 ? { ok: false, error: { code: 'RENAME', message: '命名失败' } } : { ok: true, value: input }; };
+  f.ctx.uiWorkspace.openSession = id => { mounted = id; order.push(['open', id]); };
+  await assert.rejects(f.clients['ai-web'].openAiInConversation(undefined), { code: 'RENAME' });
+  const id = f.storage.get('whalewing:aiweb:http://fixture.local');
+  assert.ok(id); assert.equal(f.calls.filter(([kind]) => kind === 'create').length, 1); assert.equal(order.some(([kind]) => kind === 'open'), false);
+  const retry = f.clients['ai-web'].openAiInConversation(undefined); await entered.promise;
+  assert.equal(attempts, 1); assert.equal(order.some(([kind]) => kind === 'open'), false);
+  release.resolve(); await retry;
+  assert.equal(attempts, 2); assert.equal(f.storage.get('whalewing:aiweb:http://fixture.local'), id);
+  assert.equal(f.calls.filter(([kind]) => kind === 'create').length, 1);
+  assert.deepEqual(order.slice(-3), [['lookup-done', id], ['rename', { sessionId: id, title: 'AI 网页' }], ['open', id]]);
+});
+
+test('AI专用会话lookup失败保留原身份，不进入命名和打开业务', async () => {
+  const storage = new Map([['whalewing:aiweb:http://fixture.local', 'saved-ai']]);
+  const f = await fixture({ storage, existing: new Map([['saved-ai', false]]), workspaceState: { items: [{ workspaceId: 'existing', path: 'E:/fixture', sessionIds: ['saved-ai'] }] }, nativeCommandList: async () => ({ ok: false, error: { code: 'session/writer-held', message: '原生占用', details: { owner: 'other' } } }), sidebarRight: { openTab() {} } });
+  await assert.rejects(f.clients['ai-web'].openAiInConversation(undefined), { code: 'session/writer-held', sessionId: 'saved-ai', recovery: 'open' });
+  assert.equal(storage.get('whalewing:aiweb:http://fixture.local'), 'saved-ai');
+  assert.equal(f.calls.some(([kind]) => ['create', 'rename', 'open', 'command', 'attach'].includes(kind)), false);
+});
+
+
+test('来源标题卡片及详情显式标注证据范围，保留原标题和来源链接', async () => {
+  const legacy = newsSavedReport(), source = { ...legacy.items[0].sources[0], title: 'Original source headline', excerpt: '' };
+  const item = { category: 'research', label: 'headline', title: source.title, link: source.url, brief: headlineBrief, relevance: '', eventKey: `headline:${source.id}`, sources: [source] };
+  const report = { ...legacy, status: 'complete', items: [item] };
+  const f = await fixture({ news: async input => ({ ok: true, value: input.action === 'home' ? newsHomeResult([report]) : newsList() }) });
+  await button(f.render(), '知识卡片').props.onClick();
+  const card = nodes(f.render()).find(node => node.props?.className === 'yj-tile yj-news-tile');
+  assert.equal(nodes(card).find(node => node.props?.className === 'yj-tile-title').props.children.join(''), source.title);
+  assert.deepEqual(nodes(card).filter(node => node.props?.className?.startsWith?.('yj-brief-flag')).map(node => node.props.children.join('')), ['来源标题']);
+  card.props.onClick();
+  const detail = nodes(f.render()).find(node => node.type === 'dialog');
+  assert.equal(detail.props['aria-label'], source.title);
+  assert.ok(JSON.stringify(detail).includes(headlineBrief));
+  assert.deepEqual(nodes(detail).filter(node => node.props?.className?.startsWith?.('yj-brief-flag')).map(node => node.props.children.join('')), ['来源标题']);
+  assert.ok(nodes(detail).some(node => node.type === 'a' && node.props.href === source.url));
+  assert.equal(JSON.stringify(detail).includes('跟我们的关系'), false);
+  assert.equal(f.dictionaries.get('whalewing').en.newsHeadline, 'Source headline');
+  detail.props.onCancel({ preventDefault() {} });
+  assert.equal(nodes(f.render()).some(node => node.type === 'dialog'), false);
 });

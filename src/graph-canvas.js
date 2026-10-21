@@ -1,4 +1,5 @@
-import { forceSimulation, forceLink, forceManyBody, forceCenter, forceX, forceY, forceCollide } from 'd3-force';
+import { forceSimulation, forceCenter, forceX, forceY } from 'd3-force';
+import { forceLink, forceManyBody, forceCollide } from './graph-forces.js';
 
 const radius = degree => 3 + Math.min(10, Math.sqrt(degree) * 1.3);
 
@@ -8,20 +9,21 @@ export function createGraphLayout(graph) {
   // 不把可选业务字段带入 D3 热循环，避免多种对象形状使每次力计算退化。
   const nodes = graph.nodes.map(node => ({ path: node.path, degree: node.degree, index: 0, x: node.x ?? NaN, y: node.y ?? NaN, vx: node.vx ?? NaN, vy: node.vy ?? NaN, fx: node.fx, fy: node.fy }));
   const index = new Map(nodes.map((node, i) => [node.path, i]));
-  const unique = new Map();
+  const edges = [];
+  const neighbors = Array.from({ length: nodes.length }, () => new Set());
   for (const edge of graph.edges) {
     const a = index.get(edge.source), b = index.get(edge.target);
     if (a === undefined || b === undefined) throw new Error('图谱边缺少端点');
-    if (a !== b) unique.set(a < b ? `${a}:${b}` : `${b}:${a}`, [Math.min(a, b), Math.max(a, b)]);
+    // 对称邻接已持有无向关系；首见时同时登记，避免再建字符串键容器或重排边。
+    if (a === b || neighbors[a].has(b)) continue;
+    edges.push([Math.min(a, b), Math.max(a, b)]);
+    neighbors[a].add(b); neighbors[b].add(a);
   }
-  const edges = [...unique.values()];
-  const neighbors = Array.from({ length: nodes.length }, () => new Set());
-  for (const [a, b] of edges) { neighbors[a].add(b); neighbors[b].add(a); }
   // 小型局部图的中心力随规模减弱，避免孤点比真实邻居更贴近中心。
   const gravity = Math.min(0.06, nodes.length * 0.002);
   // 唯一帧调度器手动推进；D3 不持有另一条持续更新坐标的定时循环。
   const simulation = forceSimulation(nodes).stop()
-    .force('link', forceLink(edges.map(([source, target]) => ({ source, target }))).distance(60))
+    .force('link', forceLink(edges).distance(60))
     .force('charge', forceManyBody().strength(-60).theta(1.1))
     .force('center', forceCenter())
     .force('x', forceX().strength(gravity))
@@ -72,6 +74,31 @@ export function createGraphCanvas(React) {
       let edgeCache = null, building = null, refineTimer = 0;
       const camera = { k: 1, x: 0, y: 0 };
       let fittedScale = 1;
+      // 悬停邻域与入场只做透明度过渡，坐标和半径始终是收敛结果；系统要求减弱动态时直接切换。
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+      let motion = !reducedMotion?.matches, shown = -1, glow = 0, intro = motion ? 0 : 1, reveal = null, clock = 0;
+      const motionChanged = () => { motion = !reducedMotion.matches; if (!motion) intro = 1; schedule(); };
+      const target = () => hover >= 0 ? hover : keyboard;
+      const animating = () => intro < 1 || (target() >= 0 ? glow < 1 || shown !== target() : glow > 0);
+      const animate = () => {
+        const now = performance.now(), elapsed = clock ? now - clock : 16;
+        clock = now;
+        // 按实际帧间隔推进，间隔至少按4ms（约240Hz）计：高刷屏保持设计时长，连续调度的帧也在有限帧内走完。
+        const advance = duration => motion ? Math.min(1, Math.max(elapsed, 4) / duration) : 1;
+        if (target() >= 0) { shown = target(); glow = Math.min(1, glow + advance(140)); }
+        else if ((glow = Math.max(0, glow - advance(220))) === 0) shown = -1;
+        if (intro < 1) intro = Math.min(1, intro + advance(700));
+      };
+      // 入场从布局中心向外依次显现：越靠外越晚，先点后线，标题最后。
+      const fade = (from, span) => { const t = clamp((intro - from) / span, 0, 1); return t * t * (3 - 2 * t); };
+      const revealOrder = () => {
+        let cx = 0, cy = 0, far = 0;
+        for (let i = 0; i < n; i++) { cx += x[i] / n; cy += y[i] / n; }
+        const order = new Float64Array(n);
+        for (let i = 0; i < n; i++) far = Math.max(far, order[i] = Math.hypot(x[i] - cx, y[i] - cy));
+        for (let i = 0; i < n; i++) order[i] = far ? order[i] / far : 0;
+        return order;
+      };
       const colors = () => {
         const style = getComputedStyle(element);
         palette = {
@@ -153,10 +180,14 @@ export function createGraphCanvas(React) {
         // 密集全连接压力图仍留出关系空间；真实稀疏图不再被统一压成细小黑点。
         const packing = n > 80 ? Math.min(Math.sqrt(camera.k), Math.sqrt(Math.max(1, (maxX - minX) * (maxY - minY)) * 0.2 / nodeArea)) : Math.sqrt(camera.k);
         for (let i = 0; i < n; i++) sizes[i] = clamp(radius(nodes[i].degree) * packing, 1.7, 18);
-        const emphasized = hover >= 0 ? hover : keyboard;
+        const emphasized = shown;
         const related = i => i === emphasized || (emphasized >= 0 && neighbors[emphasized].has(i));
+        // 非邻域按过渡进度淡出，指针在节点间快速掠过时整图不会在全亮与全暗之间跳变。
+        const dim = (alpha, i) => emphasized >= 0 && !related(i) ? 1 - (1 - alpha) * glow : 1;
+        if (intro < 1 && !reveal) reveal = revealOrder();
+        const appear = i => intro < 1 ? fade(reveal[i] * 0.55, 0.45) : 1;
         const cache = edgeCache || building;
-        const edgeAlpha = clamp(0.3 / Math.sqrt(1 + edges.length / Math.max(n, 1) / 4), 0.035, 0.24) * (emphasized >= 0 ? 0.2 : 1);
+        const edgeAlpha = clamp(0.3 / Math.sqrt(1 + edges.length / Math.max(n, 1) / 4), 0.035, 0.24) * (1 - 0.8 * glow) * fade(0.25, 0.6);
         if (direct && !running) {
           // 常见知识库直接按当前像素绘制全部几何线，缩放稳定结果不依赖位图插值。
           context.beginPath(); context.lineWidth = 0.7; context.strokeStyle = palette.edge; context.globalAlpha = edgeAlpha;
@@ -176,7 +207,7 @@ export function createGraphCanvas(React) {
           if (node < 0) continue;
           context.beginPath(); context.lineWidth = node === emphasized ? 1 : 0.6;
           context.strokeStyle = node === emphasized ? palette.accent : palette.edge;
-          context.globalAlpha = node === emphasized ? 0.7 : 0.2;
+          context.globalAlpha = node === emphasized ? 0.7 * glow : 0.2;
           for (const other of neighbors[node]) {
             context.moveTo(sx[node], sy[node]); context.lineTo(sx[other], sy[other]);
           }
@@ -186,7 +217,7 @@ export function createGraphCanvas(React) {
         for (let i = 0; i < n; i++) {
           if (sx[i] < -24 || sy[i] < -24 || sx[i] > width + 24 || sy[i] > height + 24) continue;
           context.beginPath(); context.arc(sx[i], sy[i], sizes[i], 0, Math.PI * 2);
-          context.globalAlpha = emphasized >= 0 && !related(i) ? 0.18 : 1;
+          context.globalAlpha = dim(0.18, i) * appear(i);
           const color = i === chosen || i === hover || i === keyboard ? palette.accent : palette.foreground;
           context.fillStyle = nodes[i].kind === 'missing' ? palette.background : color;
           context.fill();
@@ -213,7 +244,7 @@ export function createGraphCanvas(React) {
           const { text, width: textWidth } = labelCache[i];
           const left = sx[i] - textWidth / 2, top = sy[i] + sizes[i] + 5;
           if (left < 2 || left + textWidth > width - 2 || top < 2 || top + 17 > height - 2) continue;
-          context.globalAlpha = emphasized >= 0 && !related(i) ? 0.25 : 1;
+          context.globalAlpha = dim(0.25, i) * fade(0.7, 0.3);
           context.lineWidth = 4; context.strokeStyle = palette.background; context.strokeText(text, sx[i], top);
           context.fillStyle = palette.foreground; context.fillText(text, sx[i], top);
         }
@@ -222,10 +253,11 @@ export function createGraphCanvas(React) {
       const step = () => {
         labelSelection = null;
         simulation.tick();
-        for (let i = 0; i < n; i++) {
+        steps++;
+        // running期间不绘制或交互，resize/reset的暂态fit也会在完成时重做；只发布完整300tick坐标。
+        if (steps === 300) for (let i = 0; i < n; i++) {
           x[i] = layout.nodes[i].x; y[i] = layout.nodes[i].y;
         }
-        steps++;
         return steps < 300;
       };
       const tick = () => {
@@ -239,8 +271,8 @@ export function createGraphCanvas(React) {
         if (!direct && !running && !building && !edgeCache) beginEdges();
         paintEdges();
         // 未收敛坐标不呈现为可交互图，首个可见帧只使用最终 fit，避免缩放跳变。
-        if (!running) draw();
-        if (running || building) schedule();
+        if (!running) { animate(); draw(); }
+        if (running || building || animating()) schedule(); else clock = 0;
       };
       const schedule = () => { if (alive && !frame && !document.hidden) frame = requestAnimationFrame(tick); };
       const stopDrag = (cancel = false) => {
@@ -356,7 +388,7 @@ export function createGraphCanvas(React) {
         schedule();
       };
       const visibility = () => {
-        if (document.hidden) { if (frame) cancelAnimationFrame(frame); frame = 0; stopDrag(true); clearTimeout(refineTimer); refineTimer = 0; releaseLayer(building); building = null; }
+        if (document.hidden) { if (frame) cancelAnimationFrame(frame); frame = 0; clock = 0; stopDrag(true); clearTimeout(refineTimer); refineTimer = 0; releaseLayer(building); building = null; }
         else { beginEdges(); schedule(); }
       };
       const cancelDrag = event => {
@@ -367,6 +399,7 @@ export function createGraphCanvas(React) {
       for (const [name, handler] of Object.entries(listeners)) element.addEventListener(name, handler);
       element.addEventListener('wheel', wheel, { passive: false });
       document.addEventListener('visibilitychange', visibility);
+      reducedMotion?.addEventListener('change', motionChanged);
       const observer = new ResizeObserver(resize); observer.observe(element);
       const unsubscribe = subscribeTheme?.(() => { colors(); releaseLayer(edgeCache); edgeCache = null; beginEdges(); schedule(); });
       colors(); resize();
@@ -375,6 +408,7 @@ export function createGraphCanvas(React) {
         alive = false; simulation.stop(); if (frame) cancelAnimationFrame(frame); clearTimeout(refineTimer); stopDrag(true); observer.disconnect(); unsubscribe?.();
         for (const [name, handler] of Object.entries(listeners)) element.removeEventListener(name, handler);
         element.removeEventListener('wheel', wheel); document.removeEventListener('visibilitychange', visibility);
+        reducedMotion?.removeEventListener('change', motionChanged);
         releaseLayer(building); releaseLayer(edgeCache);
         controller.current = null;
       };

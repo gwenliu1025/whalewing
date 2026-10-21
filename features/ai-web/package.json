@@ -1,0 +1,6 @@
+{
+  "name": "dsh-whalewing-ai-web",
+  "type": "module",
+  "description": "集中打开和管理 AI 网页入口。",
+  "icon": "./icon.svg"
+}

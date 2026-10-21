@@ -1,6 +1,5 @@
 import path from 'node:path';
-import { mkdir, realpath, stat } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { realpath, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Service } from '@deepseek-ai/cordis';
@@ -11,36 +10,21 @@ import { bindTypertRemote, RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { WhalewingCore } from './src/service.js';
 import { abort, defaultLimits, fail, frontmatter } from './src/vault.js';
 import { vaultLocation } from './src/vault-location.js';
-import { knowledgeContract } from './src/knowledge-contract.js';
-import { skillLibraryContract } from './src/skill-library-contract.js';
-import { automationContract } from './src/automation-contract.js';
-import { Automation, automationProjection, claimCommands, observeAutomation } from './src/automation.js';
-import { News, newsDomain, newsLimits } from './src/news.js';
-import { newsContract } from './src/news-contract.js';
-import { ModelWorld } from './src/model-world.js';
-import { modelWorldVendorIds } from './src/model-world-roster.js';
-import { modelWorldContract, worldLimits } from './src/model-world-contract.js';
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem';
-import { HttpFetchProvider } from '@deepseek-ai/dsh-web-fetch-http';
-import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
-import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
-import { aiWebContract } from './src/utilities/ai-web.js';
-import { AiWebStore, aiWebDomain } from './src/ai-web-store.js';
-import { selectLearningContext } from './src/learning-cards.js';
+import { automationProjection, claimCommands, automationIdentity } from './src/identity.js';
+import { FeatureRegistry } from './src/features.js';
+import { installNewsGate } from './src/news-gate.js';
+import { workbenchContract } from './src/workbench-contract.js';
+import { apply as installSkills } from './src/skill-provider.js';
+import { parts } from './features/index.js';
+import * as Experts from './features/experts/host.js';
+import * as Assistant from './features/assistant/host.js';
+import * as Knowledge from './features/knowledge/host.js';
+import * as Skills from './features/skills/host.js';
+import * as Automation from './features/automation/host.js';
 
 const packageRoot = fileURLToPath(new URL('.', import.meta.url));
-const knowledge = knowledgeContract(schema);
-const skillLibrary = skillLibraryContract(schema);
-const automation = automationContract(schema);
-const news = newsContract(schema);
-const modelWorld = modelWorldContract(schema);
-const aiWeb = aiWebContract(schema);
-
-// 仅持久域名称按实际 profile 隔离；记录结构和版本始终由资讯 owner 的声明持有。
-const taskWorkspaceTitle = '鲸翼定时任务';
-const profileNewsDomain = directory => defineDomain({ ...newsDomain, name: `${newsDomain.name}_${createHash('sha256').update(directory).digest('hex')}` });
-const profileAiWebDomain = directory => defineDomain({ ...aiWebDomain, name: `${aiWebDomain.name}_${createHash('sha256').update(directory).digest('hex')}` });
-
+export const baseHosts = { experts: Experts, assistant: Assistant, knowledge: Knowledge.default, skills: Skills.default, automation: Automation.default };
 // 工作台身份只由本命令的成功回执重建；标题、浏览器缓存和其他命令都不是身份依据。
 export const workbenchProjection = {
   key: 'whalewingWorkbench', stateVersion: 1,
@@ -66,6 +50,7 @@ export const workbenchProjection = {
 export default class Whalewing extends Service {
   static inject = ['commands', 'sessionQuery', 'sessionProjections', 'sessions', 'skills', 'typert'];
   static Config = z.object({
+    experts: Experts.Config.default({}),
     vaultRoot: z.string().description('独立 Markdown 知识库绝对路径；Windows 桌面默认安装目录同级/whalewing-vault，已有库保持原路径并提示迁移'),
     maxNoteBytes: z.number().step(1).min(4096).max(1048576).default(defaultLimits.maxNoteBytes),
     maxFiles: z.number().step(1).min(10).max(50000).default(defaultLimits.maxFiles),
@@ -95,7 +80,7 @@ export default class Whalewing extends Service {
       listSessions: signal => ctx.sessionQuery.listSessions(signal),
       listWorkspaces: signal => this.listWorkspaces(signal),
       readSourceScope: (accept, signal) => this.readSourceScope(accept, signal),
-      automationIdentity: (id, signal) => this.automation.identity(id, signal),
+      automationIdentity: (id, signal) => this.automationIdentity(id, signal),
       schedule: () => ctx.get('schedule'),
       changed: () => ctx.emit('whalewing/changed'),
       discover: async (record, caller, signal) => {
@@ -116,56 +101,12 @@ export default class Whalewing extends Service {
     }, config);
     this.vault = this.core.vault;
     this.skills = this.core.skills;
-    this.automation = new Automation({
-      listWorkspaces: signal => this.listWorkspaces(signal),
-      taskDirectory: signal => this.taskDirectory(signal),
-      schedule: () => ctx.get('schedule'),
-      projections: (sessionId, signal) => {
-        const controller = ctx.get('sessionController');
-        if (!controller) fail('AUTOMATION_UNAVAILABLE', '宿主会话服务尚未加载');
-        return controller.projections({ sessionId }, signal);
-      },
-      confirmClaim: async (sessionId, signal) => {
-        abort(signal);
-        const session = ctx.sessions.get(sessionId);
-        if (!session || !await ctx.sessions.flush(session)) fail('PERSISTENCE', '自动任务用途尚未确认持久化，请保留原会话并回读');
-      },
-      prepareModel: (sessionId, signal) => {
-        const experts = ctx.get('whalewingExperts');
-        if (!experts) fail('MODEL_UNAVAILABLE', '专家模型准备服务尚未加载');
-        return experts.prepareModel({ sessionId, automation: true }, signal);
-      },
-      newsLifecycle: async signal => { const owner = await this.newsOwner(signal); await owner.initialize(); return owner.lifecycleTable; },
-      createNewsSession: async (sessionId, signal) => {
-        const controller = ctx.get('sessionController');
-        // 资讯会话直接建在“鲸翼定时任务”工作区里；宿主没有工作区服务时退回只给目录。
-        const workspace = await this.taskWorkspace(signal);
-        const location = workspace ? { workspaceId: workspace.id } : { cwd: await this.taskDirectory(signal) };
-        abort(signal);
-        const created = await controller.create({ sessionId, ...location, agentPreset: 'standard' });
-        if (created.sessionId !== sessionId || created.agentPreset !== 'standard') fail('AUTOMATION_IDENTITY', '资讯会话身份尚未确认');
-        abort(signal);
-        if (await this.automation.identity(sessionId, signal) !== 'news') {
-          const agent = ctx.get('agents')?.get(sessionId);
-          if (!agent) fail('AUTOMATION_UNAVAILABLE', '资讯会话尚未就绪，请按原身份重试');
-          const execution = await ctx.commands.execute(agent, '/whalewing {"action":"automation_claim","purpose":"news"}', [], signal);
-          if (execution?.result?.kind !== 'success') fail('AUTOMATION_IDENTITY', '资讯会话用途认领失败，请按原身份重试');
-        }
-        await this.automation.dependencies.confirmClaim(sessionId, signal);
-        if (await this.automation.identity(sessionId, signal) !== 'news') fail('AUTOMATION_IDENTITY', '资讯会话用途尚未回读确认');
-      },
-      newsCreate: async (sessionId, submit, signal) => {
-        const owner = await this.newsOwner(signal);
-        return owner.withScheduleSpec(sessionId, submit, signal);
-      },
-    });
-    this.typertRemote = bindTypertRemote(this, 'whalewing', { namespace: 'whalewingKnowledge' });
-    ctx.typert.register(knowledge.host);
-    ctx.typert.register(skillLibrary.host);
-    ctx.typert.register(automation.host);
-    ctx.typert.register(news.host);
-    ctx.typert.register(modelWorld.host);
-    ctx.typert.register(aiWeb.host);
+    this.apiVersion = 1;
+    this.registry = new FeatureRegistry(ctx, parts);
+    this.features = Object.assign(() => this.registry.snapshot(), { register: (scope, manifest) => this.registry.register(scope, manifest) });
+    const handlers = this.commandHandlers = new Map();
+    this.typertRemote = bindTypertRemote(this, 'whalewing', { namespace: 'whalewingWorkbench' });
+    ctx.typert.register(workbenchContract(schema).host);
     ctx.sessionProjections.register(workbenchProjection);
     ctx.sessionProjections.register(automationProjection);
     ctx.commands.register({
@@ -175,6 +116,7 @@ export default class Whalewing extends Service {
           if (Buffer.byteLength(rawInput) > this.vault.limits.maxNoteBytes * 2) fail('SIZE', '命令内容超出限制');
           abort(signal);
           const input = JSON.parse(rawInput);
+          if (input?.action === 'automation_skip') return this.newsGate.notice(input, agent, signal);
           if (input?.action === 'automation_claim') {
             if (Object.keys(input).length !== 2 || !['knowledge', 'custom', 'news'].includes(input.purpose)) fail('INPUT', '自动任务认领只接受用途');
             if (agent.status !== 'idle' || agent.session.header?.origin === 'subagent' || agent.session.header?.agentPreset !== 'standard') fail('AUTOMATION_SESSION', '自动任务只认领空闲的 standard 普通会话');
@@ -215,40 +157,56 @@ export default class Whalewing extends Service {
             return { kind: 'success', text: JSON.stringify({ action: 'workbench_claim', claimed: true }) };
           }
           if (input?.action === 'status' && !await ctx.sessions.flush(agent.session)) fail('PERSISTENCE', '工作台状态尚未确认保存；请保留当前页面并重试');
-          return { kind: 'success', text: JSON.stringify(await this.execute(input, { kind: 'human', agent, signal })) };
+          const handler = handlers.get(input.domain ?? input.action);
+          if (!handler && input.action !== 'status' && !input.action?.startsWith('schedule_')) fail('ACTION', '功能尚未加载，请稍后重试');
+          return { kind: 'success', text: JSON.stringify(await (handler ? handler(input, { kind: 'human', agent, signal }) : this.execute(input, { kind: 'human', agent, signal }))) };
         } catch (error) { return { kind: 'error', text: JSON.stringify({ code: error.code || error.name || 'ERROR', message: error.message }) }; }
       },
     });
-    // 插件加载后就登记任务工作区，员工不用自己添加目录；失败不影响其它功能，建任务时会再试。
-    ctx.inject(['workspaceRegistry'], async () => {
-      try { await this.taskWorkspace(this.core.closing.signal); } catch { /* 建任务时会再次登记，并在那里报错。 */ }
-    });
-    // 服务就绪触发默认任务，而非等待员工打开页面；失败只留下诊断与同身份恢复入口。
-    ctx.inject(['schedule', 'sessionController', 'storageDomain', 'profileContext', 'agents'], async scope => {
-        const lifecycle = new AbortController();
-        scope.effect(() => () => lifecycle.abort(new Error('资讯默认任务依赖已卸载')));
-        const operation = this.automation.initializeNews(AbortSignal.any([this.core.closing.signal, lifecycle.signal, AbortSignal.timeout(newsLimits.deadlineMs)]));
-        this.core.pending.add(operation);
-        try { await operation; this.defaultNewsError = undefined; }
-        catch (error) { this.defaultNewsError = { sessionId: 'default-news', message: `每日资讯默认任务未完成初始化：${error.message}`.slice(0, 400) }; }
-        finally { this.core.pending.delete(operation); }
-    });
-    ctx.effect(() => async () => {
-      // 先停止新入口并等待真实在途资源，再关闭持久域；晚到的 open 自行关闭而不发布实例。
-      const results = await Promise.allSettled([this.core.dispose(), this.modelWorld?.dispose()]);
-      this.newsRelease?.resolve();
-      this.aiWebRelease?.resolve();
-      results.push(...await Promise.allSettled([this.newsLifetime, this.aiWebLifetime]));
-      const failed = results.find(result => result.status === 'rejected'); if (failed) throw failed.reason;
-    }, 'whalewing pending operations');
+    this.newsGate = installNewsGate(ctx, this.registry);
+    ctx.effect(() => () => this.core.dispose(), '鲸翼知识底座');
+    ctx.inject(['skills', 'whalewing'], scope => installSkills(scope));
+    // 监督使用Cordis自身fiber；单个失败不从父启动函数继续抛出。
+    for (const part of parts.filter(part => part.kind === 'base')) this.registry.loadBase(part, () => ctx.plugin(baseHosts[part.id], config[part.id]));
   }
 
+  get commands() {
+    const scope = this.ctx, handlers = this.commandHandlers;
+    return { handle(action, handler) {
+      if (typeof action !== 'string' || !action || typeof handler !== 'function') fail('INPUT', '命令登记需要动作与处理函数');
+      if (handlers.has(action)) fail('ACTION_CONFLICT', '命令动作已登记');
+      handlers.set(action, handler);
+      // Cordis跟踪调用上下文，动作随登记插件退出，不由核心永久持有。
+      return scope.effect(() => () => { if (handlers.get(action) === handler) handlers.delete(action); });
+    } };
+  }
+
+  get knowledge() {
+    const caller = this.ctx;
+    const read = (input, signal) => {
+      const feature = this.registry.caller(caller);
+      return this.execute(input, { kind: 'plugin', package: feature.package, feature: feature.id, signal });
+    };
+    return {
+      search: (query, options = {}) => read({ action: 'search', query: schema.string().max(200).parse(query), ...schema.strictObject({}).parse(Object.fromEntries(Object.entries(options).filter(([key]) => key !== 'signal'))) }, options.signal),
+      read: path => read(schema.strictObject({ action: schema.literal('read'), path: schema.string() }).parse({ action: 'read', path })),
+    };
+  }
+
+  watchFeatures(signal) { return this.registry.watch(signal); }
+  async retryBase(id) { await this.registry.retry(id); return this.registry.snapshot(); }
+  automationIdentity(id, signal) {
+    return automationIdentity((sessionId, nextSignal) => {
+      const controller = this.ctx.get('sessionController');
+      if (!controller) fail('AUTOMATION_UNAVAILABLE', '宿主会话服务尚未加载');
+      return controller.projections({ sessionId }, nextSignal);
+    }, id, signal);
+  }
   async execute(input, caller) {
     const result = await this.core.execute(input, caller);
     return input.action === 'status' && !input.domain && this.location.notice ? { ...result, locationNotice: this.location.notice } : result;
   }
 
-  /** 只投射宿主登记身份和成员；范围选择与来源过滤继续由自动任务 owner 决定。 */
   async listWorkspaces(signal) {
     abort(signal);
     const registry = this.ctx.get('workspaceRegistry');
@@ -258,11 +216,10 @@ export default class Whalewing extends Service {
     return rows.map(workspace => ({ workspaceId: workspace.id, path: workspace.path, sessionIds: workspace.sessionIds }));
   }
 
-  /** Schedule 初始化后同步读取两个原 owner；回调内完成来源接纳，不保留范围镜像。 */
   readSourceScope(accept, signal) {
     abort(signal);
     const schedule = this.ctx.get('schedule');
-    if (!schedule) fail('SOURCE_UNAVAILABLE', 'DSH 的定时任务插件尚未开启，请在「插件」页开启「定时任务」后重试');
+    if (!schedule) fail('SOURCE_UNAVAILABLE', 'DSH 定时服务尚未就绪；新版请检查启动日志并重启 DSH，旧版请确认官方定时任务插件已启用，然后重试');
     if (typeof schedule.readCatalog !== 'function') {
       // 未适配的 DSH 没有同步读取口：先读计划目录再读工作区，两步之间有很短的窗口，不影响知识整理的结果。
       return (async () => {
@@ -284,168 +241,6 @@ export default class Whalewing extends Service {
     }, signal);
   }
 
-  /** 只读当前员工库的公开索引；采样与推荐规则均由学习内容 owner 持有。 */
-  async learningContext(signal) {
-    abort(signal); abort(this.core.closing.signal);
-    if (!await this.vault.initialized()) return { notes: [], total: 0 };
-    abort(signal);
-    const records = await this.vault.index(signal);
-    abort(signal);
-    return selectLearningContext(records);
-  }
-
-  /** AI 入口持久域以真实 profile 分离并独占持锁，所有已接纳操作结束后才关闭。 */
-  async aiWebOwner(signal) {
-    abort(signal); abort(this.core.closing.signal);
-    if (this.aiWeb) return this.aiWeb;
-    if (!this.aiWebOpening) {
-      const ready = Promise.withResolvers(), release = Promise.withResolvers();
-      const lifetime = (async () => {
-        const directory = await this.profileDirectory(this.core.closing.signal);
-        const facility = this.ctx.get('storageDomain');
-        if (!facility) fail('AI_WEB_UNAVAILABLE', '宿主本地存储服务尚未加载，未修改 AI 入口');
-        await withFileLock(path.join(directory, 'whalewing-ai-web'), async () => {
-          let domain, owner;
-          try {
-            abort(this.core.closing.signal);
-            domain = await facility.open(profileAiWebDomain(directory));
-            abort(this.core.closing.signal);
-            owner = new AiWebStore(domain);
-            this.aiWebDomain = domain; this.aiWeb = owner;
-            ready.resolve(owner);
-            await release.promise;
-          } finally { try { await owner?.dispose(); } finally { await domain?.close(); } }
-        }, { waitMs: 0 });
-      })();
-      // 持锁 lifetime 不进入业务 pending，卸载先排空写入再释放此等待。
-      this.aiWebRelease = release;
-      this.aiWebLifetime = lifetime.catch(error => { ready.reject(error); if (this.aiWeb) throw error; });
-      const opening = ready.promise;
-      this.aiWebOpening = opening;
-      this.core.pending.add(opening);
-      opening.then(() => this.core.pending.delete(opening), () => {
-        this.core.pending.delete(opening);
-        if (this.aiWebOpening === opening) this.aiWebOpening = undefined;
-      });
-    }
-    const opening = this.aiWebOpening;
-    return observeAutomation(() => opening, signal);
-  }
-
-  /** 员工目录管理不启动模型、浏览器或知识库；已提交写入等待真实持久读回。 */
-  async manageAiWeb(raw, signal) {
-    try {
-      const input = aiWeb.input.parse(raw);
-      signal = AbortSignal.any([this.core.closing.signal, AbortSignal.timeout(this.vault.limits.operationMs), ...(signal ? [signal] : [])]);
-      abort(signal);
-      const operation = (async () => { const owner = await this.aiWebOwner(signal); abort(signal); return aiWeb.result.parse(await owner.manage(input, signal)); })();
-      this.core.pending.add(operation);
-      try { return await operation; } finally { this.core.pending.delete(operation); }
-    } catch (error) { throw new RemoteError(error.code || error.name || 'ERROR', error.message, {}); }
-  }
-
-  /** 员工的无会话文件入口；输入白名单不包含模型或定时执行动作。 */
-  async manage(input, signal) {
-    try {
-      return await this.execute(knowledge.input.parse(input), { kind: 'human', signal });
-    } catch (error) { throw new RemoteError(error.code || error.name || 'ERROR', error.message, {}); }
-  }
-
-  /** 自动任务管理独立于知识库初始化；读取关闭模板不读取会话正文或创建计划。 */
-  async manageAutomation(raw, signal) {
-    try {
-      const input = automation.input.parse(raw);
-      if (Buffer.byteLength(JSON.stringify(input)) > 131072) fail('SIZE', '计划请求超过 128 KiB');
-      signal = AbortSignal.any([this.core.closing.signal, AbortSignal.timeout(this.vault.limits.operationMs), ...(signal ? [signal] : [])]);
-      const operation = this.automation.manage(input, signal).then(result => {
-        if (input.action === 'initializeNews') this.defaultNewsError = undefined;
-        if (input.action === 'catalog' && this.defaultNewsError) return { ...result, issues: [...result.issues, this.defaultNewsError] };
-        return result;
-      });
-      this.core.pending.add(operation);
-      try { return automation.result.parse(await operation); }
-      finally { this.core.pending.delete(operation); }
-    } catch (error) { throw new RemoteError(error.code || error.name || 'ERROR', error.message, {}); }
-  }
-
-  /** 资讯域按需打开并共用一次初始化；取消调用不再进入后续业务，真实打开资源仍由卸载收束。 */
-  async newsOwner(signal) {
-    abort(signal); abort(this.core.closing.signal);
-    if (this.news) return this.news;
-    if (!this.newsOpening) {
-      const ready = Promise.withResolvers(), release = Promise.withResolvers();
-      const lifetime = (async () => {
-        const directory = await this.profileDirectory(this.core.closing.signal);
-        const facility = this.ctx.get('storageDomain');
-        if (!facility) fail('NEWS_UNAVAILABLE', '宿主本地存储服务尚未加载，未修改资讯或知识库');
-        await withFileLock(path.join(directory, 'whalewing-news'), async () => {
-          let domain, owner;
-          try {
-            abort(this.core.closing.signal);
-            domain = await facility.open(profileNewsDomain(directory));
-            abort(this.core.closing.signal);
-            owner = new News(domain, {
-              learningContext: nextSignal => this.learningContext(nextSignal),
-              identity: (sessionId, nextSignal) => this.automation.identity(sessionId, nextSignal),
-              catalog: nextSignal => this.automation.catalog(nextSignal),
-              pause: (task, nextSignal) => {
-                const { sessionId, status, purpose: _purpose, lastDelivery: _delivery, displayPrompt: _display, workspaceScope: _scope, ...expected } = task;
-                return this.automation.manage({ action: 'pause', sessionId, id: task.id, expected, expectedStatus: status }, nextSignal);
-              },
-            });
-            this.newsDomain = domain; this.news = owner;
-            ready.resolve(owner);
-            await release.promise;
-          } finally {
-            try { await owner?.dispose(); } finally { await domain?.close(); }
-          }
-        }, { waitMs: 0 });
-      })();
-      // 持锁任务不能进入 pending：卸载必须先排空业务，再释放持锁等待，避免自等。
-      this.newsRelease = release;
-      this.newsLifetime = lifetime.catch(error => {
-        ready.reject(error);
-        // 尚未发布实例的失败由初始化调用返回；已运行实例的清理失败仍交给卸载报告。
-        if (this.news) throw error;
-      });
-      const opening = ready.promise;
-      this.newsOpening = opening;
-      this.core.pending.add(opening);
-      opening.then(() => this.core.pending.delete(opening), () => {
-        this.core.pending.delete(opening);
-        if (this.newsOpening === opening) this.newsOpening = undefined;
-      });
-    }
-    const opening = this.newsOpening;
-    return observeAutomation(() => opening, signal);
-  }
-
-  /** 人工资讯配置和历史读取不初始化个人知识，不取得模型采集/提交身份。 */
-  async manageNews(raw, signal) {
-    try {
-      const input = news.manage.parse(raw);
-      signal = AbortSignal.any([this.core.closing.signal, AbortSignal.timeout(newsLimits.deadlineMs), ...(signal ? [signal] : [])]);
-      const operation = (async () => { const owner = await this.newsOwner(signal); abort(signal); return news.result.parse(await owner.manage(input, signal)); })();
-      this.core.pending.add(operation);
-      try { return await operation; } finally { this.core.pending.delete(operation); }
-    } catch (error) { throw new RemoteError(error.code || error.name || 'ERROR', error.message, {}); }
-  }
-
-  /** 模型资讯工具只交给资讯 owner；执行预算独立于知识库操作预算。 */
-  async executeNews(raw, caller) {
-    const input = news.execute.parse(raw);
-    const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(new DOMException('资讯操作超时', 'TimeoutError')), newsLimits.deadlineMs);
-    const signal = AbortSignal.any([this.core.closing.signal, deadline.signal, ...(caller.signal ? [caller.signal] : [])]);
-    const operation = (async () => {
-      const owner = await this.newsOwner(signal); abort(signal);
-      return news.executionResult.parse(await owner.execute(input, { sessionId: caller.agent?.session.id, signal }));
-    })();
-    this.core.pending.add(operation);
-    // 候选返回后的 receipt 继续受真实调用取消约束，但已结束请求的超时不得提前作废它。
-    try { return await operation; } finally { clearTimeout(timer); this.core.pending.delete(operation); }
-  }
-
   async profileDirectory(signal) {
     abort(signal);
     const profile = this.ctx.get('profileContext');
@@ -456,61 +251,6 @@ export default class Whalewing extends Service {
     return directory;
   }
 
-  /** 定时任务统一在 DSH 数据目录的 whalewing-tasks 下执行；产物集中一处，不散落到员工工程目录。 */
-  async taskDirectory(signal) {
-    abort(signal);
-    const directory = path.join(this.dshHome, 'whalewing-tasks');
-    await mkdir(directory, { recursive: true });
-    abort(signal);
-    return realpath(directory);
-  }
-
-  /** 任务目录登记成一个工作区，侧栏显示“鲸翼定时任务”；员工改过显示名的不覆盖。宿主没有工作区服务时返回 undefined。 */
-  async taskWorkspace(signal) {
-    const registry = this.ctx.get('workspaceRegistry');
-    if (!registry) return undefined;
-    const directory = await this.taskDirectory(signal);
-    const workspace = await registry.create(directory, taskWorkspaceTitle);
-    abort(signal);
-    return workspace;
-  }
-
-  /** 模型快照只使用公开当前 profile 位置；缺少该上下文时不落入全局目录。 */
-  async manageModelWorld(raw, signal) {
-    try {
-      const input = modelWorld.input.parse(raw);
-      signal = AbortSignal.any([this.core.closing.signal, AbortSignal.timeout(worldLimits.operationMs), ...(signal ? [signal] : [])]);
-      abort(signal);
-      const operation = (async () => {
-        if (!this.modelWorld) {
-          const directory = await this.profileDirectory(signal);
-          this.modelWorld ??= new ModelWorld({ root: path.join(directory, 'cache', 'whalewing-model-world'), vendorIds: modelWorldVendorIds,fetcher: new HttpFetchProvider({ maxResponseBytes: worldLimits.responseBytes, maxBodyChars: worldLimits.responseBytes, timeoutMs: 30000, maxRedirects: 0, userAgent: 'whalewing/0.1.0 ModelWorld' }) });
-        }
-        return this.modelWorld.execute(input, signal);
-      })();
-      this.core.pending.add(operation);
-      try { return modelWorld.result.parse(await operation); } finally { this.core.pending.delete(operation); }
-    } catch (error) { throw new RemoteError(error.code || error.name || 'ERROR', error.message, {}); }
-  }
-
-  /** 员工技能管理不创建会话，不把通用文件写入能力转给模型工具。 */
-  async manageSkills(raw, signal) {
-    try {
-      const input = skillLibrary.input.parse(raw);
-      signal = AbortSignal.any([this.core.closing.signal, AbortSignal.timeout(this.vault.limits.operationMs), ...(signal ? [signal] : [])]);
-      const operation = ['list', 'read', 'create', 'update', 'remove', 'reset'].includes(input.action)
-        ? this.skills.manage(input, signal)
-        : this.core.execute({ ...input, domain: 'skill' }, { kind: 'human', signal });
-      this.core.pending.add(operation);
-      try {
-        const result = await operation;
-        if (!['list', 'read'].includes(input.action)) this.ctx.emit('whalewing/changed');
-        return skillLibrary.result.parse(result);
-      } finally { this.core.pending.delete(operation); }
-    } catch (error) { throw new RemoteError(error.code || error.name || 'ERROR', error.message, {}); }
-  }
-
-  /** 只读管理候选，不注册运行时 provider；实际可用性仍由各 preset 的真实作用域决定。 */
   async projectSkills(signal) {
     signal ??= this.core.closing.signal;
     abort(signal);
@@ -530,11 +270,11 @@ export default class Whalewing extends Service {
     } finally { signal.removeEventListener('abort', cancel); lifecycle.abort(); await provider?.dispose(); }
   }
 
-  /** 专家配置复用同一管理候选；读取不赋予模型运行时发现权。 */
   async skillCandidates(signal) {
     signal = AbortSignal.any([this.core.closing.signal, AbortSignal.timeout(this.vault.limits.operationMs), ...(signal ? [signal] : [])]);
     const operation = this.skills.candidates(signal);
     this.core.pending.add(operation);
     try { return await operation; } finally { this.core.pending.delete(operation); }
   }
+
 }

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiWebEntries, findAiWebEntries, openAiWebsite, createAiWebView } from '../src/utilities/ai-web.js';
+import { aiWebEntries } from '../features/ai-web/catalog.js';
+import { createAiWebView } from '../features/ai-web/view.js';
+import { findAiWebEntries, openAiWebsite } from '../features/ai-web/client-api.js';
 
 test('官方目录名称唯一，仅包含不带凭据的 HTTPS 入口', () => {
   assert.equal(new Set(aiWebEntries.map(entry => entry.id)).size, aiWebEntries.length);

@@ -1,0 +1,65 @@
+import { Context } from '@deepseek-ai/cordis';
+import Loader from '@deepseek-ai/cordis-plugin-loader';
+import Presets from '@deepseek-ai/dsh-agent-preset-registry';
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import Storage from '@deepseek-ai/dsh-storage';
+import * as StorageJson from '@deepseek-ai/dsh-storage-json';
+import * as StorageDomain from '@deepseek-ai/dsh-storage-domain';
+import Llm from '@deepseek-ai/dsh-llm';
+import Sessions from '@deepseek-ai/dsh-session';
+import Projections from '@deepseek-ai/dsh-session-projection';
+import Commands from '@deepseek-ai/dsh-commands';
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
+import Tools from '@deepseek-ai/dsh-tools';
+import Agents from '@deepseek-ai/dsh-agent';
+import Loop from '@deepseek-ai/dsh-agent-loop';
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl';
+import Query from '@deepseek-ai/dsh-session-query';
+import Workspace from '@deepseek-ai/dsh-workspace';
+import Controller from '@deepseek-ai/dsh-api-session-controller';
+import Schedule from '@deepseek-ai/dsh-schedule';
+import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry';
+import { mountFeatures } from './feature-fixture.mjs';
+
+/** 只替换不参与会话身份的模型与文件界面依赖；持久化、工作区、Controller和调度使用实际包。 */
+export async function controllerFixture(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'whalewing-controller-'));
+  const ctx = new Context();
+  const restores = [];
+  t.after(async () => {
+    for (const restore of restores.reverse()) await restore();
+    await ctx.fiber.dispose();
+    const resolved = path.resolve(root);
+    if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('whalewing-controller-')) throw new Error('拒绝清理测试临时目录以外的路径');
+    await rm(resolved, { recursive: true, force: true });
+  });
+  new TypertRegistry(ctx);
+  await ctx.plugin(Storage); await ctx.plugin(StorageJson, { root: path.join(root, 'storage') });
+  await ctx.plugin(StorageDomain, { backend: 'json' });
+  for (const plugin of [Llm, Sessions, Projections, Commands]) await ctx.plugin(plugin);
+  await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false });
+  for (const plugin of [Tools, Agents]) await ctx.plugin(plugin);
+  await ctx.plugin(Jsonl.default ?? Jsonl, { root: path.join(root, 'sessions'), compression: 'none' });
+  await ctx.plugin(Query); await ctx.plugin(Loop, { agents: [] }); await ctx.plugin(Workspace);
+  ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }), saveSelection() {} });
+  ctx.provide('attachments', { imageLimits: { maxImageBytes: 1024, maxImagesPerMessage: 1, maxMessageImageBytes: 1024, maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'] } });
+  ctx.provide('fileUploads', { registerAgentResolver() { return () => {}; } });
+  ctx.provide('fs', {}); ctx.provide('remoteAccess', { allows: () => true });
+  ctx.provide('skills', { registerProvider() {}, async list() { return []; } });
+  await ctx.plugin(Loader, { baseUrl: import.meta.url });
+  await ctx.plugin(Presets, { default: 'standard' });
+  const releasePreset = await ctx.agentPresets.register({ id: 'standard', plugins: [] });
+  restores.push(releasePreset);
+  await ctx.plugin(Controller, { nativeOpen: false });
+  const mounted = await mountFeatures(ctx, root, {}, false);
+  await ctx.plugin(Schedule, {});
+  const directory = path.join(root, 'work'); await mkdir(directory);
+  const cwd = await realpath(directory);
+  const workspace = await ctx.workspaceRegistry.create(cwd, '隔离会话');
+  const signal = () => AbortSignal.timeout(10000);
+  const create = (sessionId, changes = {}) => ctx.sessionController.create({ sessionId, cwd, agentPreset: 'standard', ...changes });
+  const projection = id => ctx.sessionController.projections({ sessionId: id }, signal());
+  return { ctx, root, cwd, workspace, create, projection, signal, restore: fn => restores.push(fn), ...mounted };
+}

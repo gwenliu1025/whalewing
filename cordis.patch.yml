@@ -1,9 +1,13 @@
 # 生成来源：scripts/build.mjs 与 content/roles.js；请修改真源后重新生成。
-# Schedule 由官方可选插件持有；本包不插入或覆盖 schedule/time-context/ui-schedule。
+# Schedule 由 DSH 提供；本包不插入或覆盖 schedule/time-context/ui-schedule。
 - insert:
     - id: whalewing
       name: dsh-whalewing
-    - id: whalewing-tools
-      name: dsh-whalewing/tools
-    - id: whalewing-experts
-      name: dsh-whalewing/experts
+    - id: whalewing-ai-web
+      name: dsh-whalewing/ai-web
+    - id: whalewing-toolbox
+      name: dsh-whalewing/toolbox
+    - id: whalewing-cards
+      name: dsh-whalewing/cards
+    - id: whalewing-model-world
+      name: dsh-whalewing/model-world

@@ -1,0 +1,6 @@
+{
+  "name": "dsh-whalewing-cards",
+  "type": "module",
+  "description": "阅读学习卡片和每日资讯。",
+  "icon": "./icon.svg"
+}

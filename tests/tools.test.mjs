@@ -1,9 +1,14 @@
+import { apply as knowledgeTool } from '../features/knowledge/tool.js';
+import { apply as skillTool } from '../features/skills/tool.js';
+import { apply as expertTool } from '../features/experts/tool.js';
+import { apply as newsTool } from '../features/cards/tool.js';
+import { allSkills } from './feature-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { apply, WhalewingSkillProvider } from '../tools.js';
+import { WhalewingSkillProvider } from '../src/skill-provider.js';
 import { Vault } from '../src/vault.js';
 import { SkillLibrary } from '../src/skills.js';
 
@@ -14,8 +19,8 @@ async function setup(t) {
   await vault.initialize();
   const library = new SkillLibrary(vault, path.join(directory, 'skills'));
   const lifecycle = new AbortController();
-  const ctx = { logger: { warn() {} }, get: () => undefined };
-  const provider = new WhalewingSkillProvider(ctx, { signal: lifecycle.signal, invalidate() {} }, library);
+  const ctx = { logger: { warn() {} }, get: () => undefined, on() { return () => {}; } };
+  const provider = new WhalewingSkillProvider(ctx, { signal: lifecycle.signal, invalidate() {} }, library, allSkills);
   t.after(() => provider.dispose());
   return { vault, library, provider, ctx, lifecycle };
 }
@@ -35,7 +40,8 @@ test('真实宿主defineTool接受全部schema，原生审批拒绝不会执行�
     sandboxPolicy: { resolve: () => ({ mode: 'workspace-write' }) },
     get: key => key === 'approval' ? { request: async () => { approvalCount++; return 'rejected'; } } : undefined,
   });
-  apply(ctx);
+  ctx.whalewingCards = { executeNews: ctx.whalewing.executeNews };
+  expertTool(ctx); newsTool(ctx); knowledgeTool(ctx); skillTool(ctx);
   t.after(async () => { for (const cleanup of cleanups) await cleanup(); });
   assert.deepEqual([...tools.keys()], ['whalewing_experts', 'whalewing_news', 'whalewing_knowledge', 'whalewing_skill']);
   const exec = { signal: new AbortController().signal, agent: { session: { id: 'fixture' } }, callId: 'fixture-call' };
@@ -63,7 +69,7 @@ test('官方filesystem发现器隔离坏个人Skill，基础Skills持续可用�
   await library.files.atomic(library.location(name, 'active'), `---\nname: ${name}\ndescription: 测试损坏来源不会冲掉基础技能目录\nmetadata:\n  whalewingSources: [null]\n---\n损坏测试。\n`);
   const observed = await provider.list({ cwd: vault.root, signal: new AbortController().signal });
   const candidates = Array.isArray(observed) ? observed : observed.candidates;
-  assert.deepEqual(candidates.map(s => s.name).sort(), ['whalewing-check', 'whalewing-knowledge', 'whalewing-news', 'whalewing-skill-evolution']);
+  assert.deepEqual(candidates.map(s => s.name).sort(), ['whalewing-check', 'whalewing-clarify', 'whalewing-coding', 'whalewing-debugging', 'whalewing-frontend-design', 'whalewing-knowledge', 'whalewing-news', 'whalewing-plugin-management', 'whalewing-skill-evolution', 'whalewing-web-testing', 'whalewing-writing']);
   const knowledge = await provider.get(candidates.find(s => s.name === 'whalewing-knowledge'), { signal: new AbortController().signal });
   assert.match(knowledge.content, /知识使用与沉淀/);
   await provider.dispose();
